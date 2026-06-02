@@ -1,3 +1,5 @@
+mod shell;
+
 use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -57,6 +59,7 @@ enum Commands {
     DownloadDir(DownloadDirArgs),
     Folder(FolderArgs),
     Rename(RenameArgs),
+    Shell,
     Upload(UploadArgs),
     UploadDir(UploadDirArgs),
 }
@@ -94,13 +97,13 @@ struct ImportCookieArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-struct DeleteArgs {
+pub(crate) struct DeleteArgs {
     #[arg(long, required = true, num_args = 1..)]
     fid: Vec<String>,
 }
 
 #[derive(Args, Debug, Clone)]
-struct ListArgs {
+pub(crate) struct ListArgs {
     #[arg(long, default_value = "0")]
     pdir_fid: String,
     #[arg(long, default_value_t = 1)]
@@ -118,7 +121,7 @@ struct ListArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-struct DownloadArgs {
+pub(crate) struct DownloadArgs {
     #[arg(long)]
     fid: String,
     #[arg(long)]
@@ -136,7 +139,7 @@ struct DownloadArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-struct DownloadDirArgs {
+pub(crate) struct DownloadDirArgs {
     #[arg(long)]
     pdir_fid: String,
     #[arg(long)]
@@ -152,18 +155,18 @@ struct DownloadDirArgs {
 }
 
 #[derive(Args, Debug)]
-struct FolderArgs {
+pub(crate) struct FolderArgs {
     #[command(subcommand)]
     command: FolderCommand,
 }
 
 #[derive(Subcommand, Debug)]
-enum FolderCommand {
+pub(crate) enum FolderCommand {
     Create(FolderCreateArgs),
 }
 
 #[derive(Args, Debug)]
-struct FolderCreateArgs {
+pub(crate) struct FolderCreateArgs {
     #[arg(long, default_value = "0")]
     pdir_fid: String,
     #[arg(long)]
@@ -171,7 +174,7 @@ struct FolderCreateArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-struct RenameArgs {
+pub(crate) struct RenameArgs {
     #[arg(long)]
     fid: String,
     #[arg(long)]
@@ -179,7 +182,7 @@ struct RenameArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-struct UploadArgs {
+pub(crate) struct UploadArgs {
     #[arg(long, default_value = "0")]
     pdir_fid: String,
     #[arg(long)]
@@ -193,7 +196,7 @@ struct UploadArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-struct UploadDirArgs {
+pub(crate) struct UploadDirArgs {
     #[arg(long, default_value = "0")]
     pdir_fid: String,
     #[arg(long)]
@@ -207,7 +210,7 @@ struct UploadDirArgs {
 }
 
 #[derive(Clone, Copy)]
-struct OutputFlags {
+pub(crate) struct OutputFlags {
     quiet: bool,
     no_progress: bool,
     color: bool,
@@ -384,6 +387,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Commands::DownloadDir(args) => handle_download_dir(flags, &quark_pan, args).await?,
         Commands::Folder(args) => handle_folder(flags, &quark_pan, args).await?,
         Commands::Rename(args) => handle_rename(flags, &quark_pan, args).await?,
+        Commands::Shell => shell::run_shell(flags, &quark_pan).await?,
         Commands::Upload(args) => handle_upload(flags, &quark_pan, args).await?,
         Commands::UploadDir(args) => handle_upload_dir(flags, &quark_pan, args).await?,
     }
@@ -605,7 +609,7 @@ async fn handle_list_more(
     Ok(())
 }
 
-fn print_list_output(
+pub(crate) fn print_list_output(
     flags: OutputFlags,
     page: &ListPage,
     long: bool,
@@ -663,7 +667,7 @@ fn print_list_output(
     Ok(())
 }
 
-async fn handle_download(
+pub(crate) async fn handle_download(
     flags: OutputFlags,
     quark_pan: &QuarkPan,
     args: DownloadArgs,
@@ -848,7 +852,7 @@ async fn download_with_retry(
     }
 }
 
-async fn handle_download_dir(
+pub(crate) async fn handle_download_dir(
     flags: OutputFlags,
     quark_pan: &QuarkPan,
     args: DownloadDirArgs,
@@ -945,7 +949,7 @@ async fn handle_download_dir(
     Ok(())
 }
 
-async fn handle_folder(
+pub(crate) async fn handle_folder(
     flags: OutputFlags,
     quark_pan: &QuarkPan,
     args: FolderArgs,
@@ -965,7 +969,7 @@ async fn handle_folder(
     Ok(())
 }
 
-async fn handle_rename(
+pub(crate) async fn handle_rename(
     flags: OutputFlags,
     quark_pan: &QuarkPan,
     args: RenameArgs,
@@ -987,7 +991,7 @@ async fn handle_rename(
     Ok(())
 }
 
-async fn handle_upload(
+pub(crate) async fn handle_upload(
     flags: OutputFlags,
     quark_pan: &QuarkPan,
     args: UploadArgs,
@@ -1093,7 +1097,7 @@ async fn resume_upload(
     Ok(())
 }
 
-async fn handle_upload_dir(
+pub(crate) async fn handle_upload_dir(
     flags: OutputFlags,
     quark_pan: &QuarkPan,
     args: UploadDirArgs,
@@ -1305,7 +1309,7 @@ where
     Ok(())
 }
 
-async fn list_all_entries(
+pub(crate) async fn list_all_entries(
     quark_pan: &QuarkPan,
     pdir_fid: &str,
     size: u32,
@@ -1385,7 +1389,7 @@ async fn collect_local_files_inner(
     Ok(())
 }
 
-async fn find_entry_by_name(
+pub(crate) async fn find_entry_by_name(
     quark_pan: &QuarkPan,
     pdir_fid: &str,
     name: &str,

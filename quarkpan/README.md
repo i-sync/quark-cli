@@ -18,6 +18,8 @@
   删除一个或多个文件或目录项
 - `rename`
   重命名文件或目录项
+- `shell`
+  进入交互式网盘 shell
 - `download`
   下载文件
 - `download-dir`
@@ -80,6 +82,26 @@ Cookie 内容应为完整的 `key=value; key2=value2` 格式。
 - `--from-vi`
 
 ## 使用示例
+
+### 交互式 shell
+
+```bash
+quarkpan shell
+```
+
+进入后可以像操作远端目录一样使用：
+
+```text
+quarkpan:/> ls
+quarkpan:/> cd "来自：分享"
+quarkpan:/来自：分享> pwd
+quarkpan:/来自：分享> get "0531小龙女卷1" ./0531-1
+quarkpan:/来自：分享> get 9142a9e0d2ba435d99a98b7acc773e7a ./from-fid
+quarkpan:/来自：分享> put ./local.mp4
+quarkpan:/来自：分享> exit
+```
+
+`ls`、`dir`、`cd`、`get`、`rm` 和 `mv` 支持路径或 32 位 FID。`get` 和 `put` 支持 `-c` 续传、`-o` 覆盖。默认遇到同名本地或远端目标时会报错，不会自动覆盖。
 
 ### 列出根目录
 

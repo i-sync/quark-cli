@@ -1346,6 +1346,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha1",
+ "shlex",
  "tokio",
  "tokio-util",
  "toml",
