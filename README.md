@@ -5,7 +5,7 @@
 - `libquarkpan`
   Rust 异步库，负责夸克网盘的目录列表、目录创建、下载、上传、分片上传和恢复相关能力。
 - `quarkpan`
-  基于 `libquarkpan` 的命令行程序，提供可直接使用的上传、下载、列目录和建目录命令。
+  基于 `libquarkpan` 的命令行程序，提供交互式 shell 和可脚本化的上传、下载、列目录、建目录等命令。
 
 ## 当前状态
 
@@ -17,8 +17,10 @@
 - 创建目录
 - 删除一个或多个文件或目录项
 - 重命名文件或目录项
+- 交互式 shell：`ls`、`dir`、`cd`、`pwd`、`get`、`put`、`mkdir`、`rm`、`mv`
 - 按文件 ID 下载
 - 按目录 ID 批量下载目录
+- 在 shell 中按路径或 FID 浏览、下载、上传、删除、重命名
 - 上传预检和快传判断
 - 非快传场景下的分片上传
 - 批量上传本地目录
@@ -51,7 +53,7 @@ cargo check -p libquarkpan
 cargo check -p libquarkpan --no-default-features --features native-tls
 ```
 
-目前接口仍然以文件 ID 和目录 ID 为主，路径解析和更高层缓存策略预留给上层应用。
+底层库接口仍然以文件 ID 和目录 ID 为主；CLI 的 `quarkpan shell` 已提供更接近日常使用的路径式交互。
 
 ## Workspace 结构
 
@@ -68,7 +70,7 @@ cargo check -p libquarkpan --no-default-features --features native-tls
 适合以下场景：
 
 - 你只需要一个可执行文件
-- 你希望直接在终端完成上传、下载和目录操作
+- 你希望直接在终端通过 `quarkpan shell` 完成上传、下载和目录操作
 - 你希望中断后依靠 `.quark.task` 文件恢复传输
 
 ## Cookie 说明
@@ -91,8 +93,24 @@ Cookie 需要是完整的 `key=value; key2=value2` 形式。
 首次使用：
 
 ```bash
-pbpaste | quarkpan auth set-cookie --from-stdin
+quarkpan auth set-cookie --from-stdin
 quarkpan auth show-source
+```
+
+进入交互式 shell：
+
+```bash
+quarkpan shell
+```
+
+常用交互命令：
+
+```text
+quarkpan:/> ls
+quarkpan:/> cd "来自：分享"
+quarkpan:/来自：分享> get "目录或文件名" ./output
+quarkpan:/来自：分享> put ./local-file
+quarkpan:/来自：分享> exit
 ```
 
 单文件下载并支持恢复：

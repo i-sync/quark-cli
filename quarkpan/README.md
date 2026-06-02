@@ -1,269 +1,182 @@
 # quarkpan
 
-`quarkpan` 是基于 `libquarkpan` 的夸克网盘命令行工具。
+`quarkpan` 是基于 `libquarkpan` 的夸克网盘命令行工具。它提供两种使用方式：
 
-它面向直接使用终端的场景，负责把底层库能力包装成可恢复、可观察、可取消的命令行体验。
-
-## 功能概览
-
-当前命令行支持：
-
-- `auth`
-  管理持久化 Cookie
-- `list`
-  列出目录内容
-- `folder create`
-  创建目录
-- `delete`
-  删除一个或多个文件或目录项
-- `rename`
-  重命名文件或目录项
-- `shell`
-  进入交互式网盘 shell
-- `download`
-  下载文件
-- `download-dir`
-  下载整个目录
-- `upload`
-  上传文件
-- `upload-dir`
-  上传整个目录
-
-同时支持：
-
-- 仅在交互式 TTY 中显示进度条
-- `--color auto|always|never`
-- Ctrl+C 取消
-- 中断后保留 `.quark.task` 任务文件
-- 下载中断后的显式重试与续传
-- 下载完成后如果服务端返回的 md5 与本地不一致，会提示 warning 并保留文件
-- 上传分片失败后的显式重试
-- 下次通过 `-c, --continue` 恢复传输
-
-## TLS Features
-
-`quarkpan` 会把底层 `libquarkpan` 的 TLS backend feature 透传出来，命名与 `reqwest 0.13` 对齐，默认使用 `default-tls`。
-
-示例：
-
-```bash
-cargo install quarkpan
-cargo install quarkpan --no-default-features --features native-tls
-```
+- `quarkpan shell`：推荐给日常用户，进入交互式 shell 后用 `ls`、`cd`、`get`、`put` 操作网盘。
+- 普通 CLI 命令：推荐给脚本或高级用户，例如 `download --fid ...`、`upload --pdir-fid ...`。
 
 ## 安装
 
-### 使用 Cargo
+### 使用 Cargo 安装
+
+如果已经安装 Rust/Cargo，可以直接安装：
 
 ```bash
 cargo install quarkpan
 ```
 
-### 从源码运行
+如果是在本仓库源码目录里测试本地版本：
 
 ```bash
-cargo run --bin quarkpan -- --help
+cargo run --bin quarkpan -- shell
 ```
 
-## Cookie 提供方式
+或者把本地源码版本安装成系统命令：
 
-CLI 需要夸克登录后的 Cookie，支持三种方式：
+```bash
+cargo install --path quarkpan --force
+```
 
-- `--cookie 'k1=v1; k2=v2'`
-- `--cookie-file ./cookie.txt`
-- 环境变量 `QUARK_COOKIE`
-- `auth set-cookie` 持久化到系统配置目录
+### 预编译可执行文件
 
-Cookie 内容应为完整的 `key=value; key2=value2` 格式。
-`auth set-cookie` 需要显式指定来源：
+理论上可以打包成单个可执行文件，用户下载后即可运行，不必先安装 Cargo。发布时可以为 Linux/macOS/Windows 分别提供 release asset，例如：
 
-- `--cookie`
-- `--from-stdin`
-- `--from-nano`
-- `--from-vi`
+```text
+quarkpan-linux-x86_64
+quarkpan-macos-aarch64
+quarkpan-windows-x86_64.exe
+```
 
-## 使用示例
+如果项目 release 页面还没有这些文件，就需要先用 Cargo 安装，或从源码自行构建：
 
-### 交互式 shell
+```bash
+cargo build --release -p quarkpan
+./target/release/quarkpan --help
+```
+
+## 第一次使用：设置 Cookie
+
+`quarkpan` 需要夸克网盘登录后的 Cookie 才能访问你的网盘。Cookie 是浏览器或官方客户端登录后生成的身份凭证，应保持私密，不要提交到 Git。
+
+推荐把 Cookie 持久化到系统配置目录：
+
+```bash
+quarkpan auth set-cookie --from-stdin
+```
+
+运行后粘贴完整 Cookie，再按回车。Cookie 格式类似：
+
+```text
+k1=v1; k2=v2; k3=v3
+```
+
+查看当前 Cookie 来源：
+
+```bash
+quarkpan auth show-source
+```
+
+也可以使用其他方式提供 Cookie：
+
+```bash
+quarkpan --cookie 'k1=v1; k2=v2' list
+quarkpan --cookie-file ./cookie.txt list
+QUARK_COOKIE='k1=v1; k2=v2' quarkpan list
+```
+
+## 推荐用法：交互式 Shell
+
+进入 shell：
 
 ```bash
 quarkpan shell
 ```
 
-进入后可以像操作远端目录一样使用：
+常用命令：
 
 ```text
 quarkpan:/> ls
 quarkpan:/> cd "来自：分享"
 quarkpan:/来自：分享> pwd
+quarkpan:/来自：分享> dir
 quarkpan:/来自：分享> get "0531小龙女卷1" ./0531-1
-quarkpan:/来自：分享> get 9142a9e0d2ba435d99a98b7acc773e7a ./from-fid
 quarkpan:/来自：分享> put ./local.mp4
 quarkpan:/来自：分享> exit
 ```
 
-`ls`、`dir`、`cd`、`get`、`rm` 和 `mv` 支持路径或 32 位 FID。`get` 和 `put` 支持 `-c` 续传、`-o` 覆盖。默认遇到同名本地或远端目标时会报错，不会自动覆盖。
-
-### 列出根目录
-
-```bash
-quarkpan --cookie 'k1=v1; k2=v2' list
-```
-
-### 持久化 Cookie
-
-```bash
-quarkpan auth set-cookie --from-stdin
-quarkpan auth show-source
-```
-
-也可以显式传入：
-
-```bash
-quarkpan auth set-cookie --cookie 'k1=v1; k2=v2'
-```
-
-也支持通过标准输入：
-
-```bash
-printf 'k1=v1; k2=v2\n' | quarkpan auth set-cookie --from-stdin
-```
-
-如果直接在终端运行：
-
-```bash
-quarkpan auth set-cookie --from-stdin
-```
-
-CLI 会先提示：
+`ls` 会显示文件名和 FID。路径和 32 位 FID 都可以直接使用：
 
 ```text
-paste cookie, then press Enter:
+quarkpan:/> ls 9142a9e0d2ba435d99a98b7acc773e7a
+quarkpan:/> cd 9142a9e0d2ba435d99a98b7acc773e7a
+quarkpan:/> get e74acfa557aa461d9356ba8e38facdf6 ./72.mp4
 ```
 
-也支持通过编辑器：
+Shell 命令速查：
+
+- `ls` / `dir [path-or-fid]`：列出目录。
+- `cd <path-or-fid>`：切换远端目录。
+- `pwd`：显示当前远端目录。
+- `get <path-or-fid> [local] [-c] [-o]`：下载文件或目录。
+- `put <local> [remote-dir-or-fid] [-c] [-o]`：上传文件或目录。
+- `mkdir <path>`：创建目录。
+- `rm <path-or-fid>`：删除文件或目录，会先确认。
+- `mv <path-or-fid> <new-name>`：同目录重命名。
+- `help`：显示帮助。
+- `exit` / `quit`：退出。
+
+`-c` 表示继续中断任务，`-o` 表示覆盖或合并。默认遇到同名本地或远端目标时不会自动覆盖。
+
+## 普通 CLI 命令
+
+普通命令适合脚本自动化，参数更接近底层 API。
+
+列出目录：
 
 ```bash
-quarkpan auth set-cookie --from-nano
-quarkpan auth set-cookie --from-vi
+quarkpan list
+quarkpan list --pdir-fid <folder_fid>
 ```
 
-### 逐页查看更多
+下载文件：
 
 ```bash
-quarkpan --cookie 'k1=v1; k2=v2' list --pdir-fid 0 --more
+quarkpan download --fid <file_fid> --output ./file.bin
+quarkpan download --fid <file_fid> --output ./file.bin -c
 ```
 
-### 创建目录
+下载目录：
 
 ```bash
-quarkpan --cookie 'k1=v1; k2=v2' folder create --pdir-fid 0 --file-name 我的文档
+quarkpan download-dir --pdir-fid <folder_fid> --output ./backup
+quarkpan download-dir --pdir-fid <folder_fid> --output ./backup -c -o
 ```
 
-### 重命名文件或目录项
+上传文件或目录：
 
 ```bash
-quarkpan --cookie 'k1=v1; k2=v2' rename --fid <fid> --file-name 新名字
-```
-
-### 删除一个或多个文件或目录项
-
-```bash
-quarkpan --cookie 'k1=v1; k2=v2' delete --fid <fid1> --fid <fid2>
-```
-
-### 下载文件
-
-```bash
-quarkpan --cookie 'k1=v1; k2=v2' download --fid <fid> --output ./file.bin
-```
-
-### 恢复下载
-
-```bash
-quarkpan --cookie 'k1=v1; k2=v2' download --fid <fid> --output ./file.bin -c
-```
-
-### 下载目录
-
-```bash
-quarkpan download-dir --pdir-fid <pdir_fid> --output ./backup
-```
-
-### 恢复或合并目录下载
-
-```bash
-quarkpan download-dir --pdir-fid <pdir_fid> --output ./backup -c
-quarkpan download-dir --pdir-fid <pdir_fid> --output ./backup -c -o
-```
-
-### 上传文件
-
-```bash
-quarkpan --cookie 'k1=v1; k2=v2' upload --file ./file.bin --pdir-fid 0
-```
-
-### 恢复上传
-
-```bash
-quarkpan --cookie 'k1=v1; k2=v2' upload --file ./file.bin --pdir-fid 0 -c
-```
-
-### 上传目录
-
-```bash
+quarkpan upload --file ./file.bin --pdir-fid 0
 quarkpan upload-dir --dir ./photos --pdir-fid 0
 ```
 
-### 恢复或合并目录上传
+创建、重命名、删除：
 
 ```bash
-quarkpan upload-dir --dir ./photos --pdir-fid 0 -c
-quarkpan upload-dir --dir ./photos --pdir-fid 0 -c -o
+quarkpan folder create --pdir-fid 0 --file-name 我的文档
+quarkpan rename --fid <fid> --file-name 新名字
+quarkpan delete --fid <fid1> --fid <fid2>
 ```
 
-## 任务文件说明
+## 传输恢复与校验
 
-下载和上传在中断、报错或收到 Ctrl+C 后，会保留：
+- 下载和上传中断后会保留 `.quark.task` 任务文件。
+- 后续使用 `-c` 可以继续中断任务。
+- 目录任务使用与目录同级同名的任务文件，例如 `photos.quark.task`。
+- 成功完成后任务文件会自动删除。
+- `Ctrl+C` 会取消当前传输，但不会删除任务文件。
+- 下载完成后如果服务端返回的 md5 与本地不一致，会提示 warning 并保留文件。
+- 进度条只在交互式终端显示，管道、重定向、定时任务中默认不显示。
 
-```text
-${filename}.quark.task
+## TLS Features
+
+默认使用 `default-tls`。也可以选择其他 TLS backend：
+
+```bash
+cargo install quarkpan --no-default-features --features native-tls
+cargo install quarkpan --no-default-features --features rustls
 ```
 
-目录任务使用与目录同级同名的任务文件，例如：
-
-```text
-photos.quark.task
-```
-
-用途：
-
-- 下载时记录远端文件身份信息和目标输出路径
-- 上传时记录预检得到的上传会话信息和已完成的分片状态
-
-成功完成后，任务文件会自动删除。
-
-`Ctrl+C` 时：
-
-- 当前传输会尽快停止
-- 已生成的任务文件会保留
-- 不会把取消误当作普通失败继续重试
-- 后续可使用 `-c` 恢复
-
-进度条显示规则：
-
-- 只在交互式终端显示
-- 定时任务、管道和重定向默认不显示
-- 下载和上传都会显示当前文件名
-
-## 当前限制
-
-- 目录和文件操作当前以 ID 为主
-- 下载当前只支持按文件 ID
-- CLI 当前不负责复杂的路径递归解析
-- 上传恢复依赖本地文件内容未变化，因此继续上传前会重新校验 `size/md5/sha1`
-- 云端覆盖当前通过删除旧文件后再上传实现
-- CLI 已移除 `--json` 输出模式
+同一时间只能启用一个 TLS backend feature。
 
 ## License
 
