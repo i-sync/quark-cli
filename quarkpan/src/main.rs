@@ -746,11 +746,8 @@ async fn download_file(
 
     if let Some(md5) = info.md5.as_deref() {
         let local = md5_file(&output).await?;
-        if !md5_matches_remote(&local, md5) {
-            return Err(Box::new(QuarkPanError::invalid_argument(format!(
-                "download completed but md5 mismatch: local={}, remote={}",
-                local, md5
-            ))));
+        if let Some(warning) = download_checksum_warning(&local, md5) {
+            eprintln!("warning: {warning}");
         }
     }
     remove_if_exists(&task_path).await?;
@@ -1676,6 +1673,37 @@ fn md5_matches_remote(local_hex_md5: &str, remote_md5: &str) -> bool {
         return false;
     };
     general_purpose::STANDARD.encode(raw) == remote_md5
+}
+
+fn download_checksum_warning(local_hex_md5: &str, remote_md5: &str) -> Option<String> {
+    if md5_matches_remote(local_hex_md5, remote_md5) {
+        None
+    } else {
+        Some(format!(
+            "download completed but md5 mismatch: local={}, remote={}",
+            local_hex_md5, remote_md5
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mismatched_download_md5_is_reported_as_warning() {
+        let warning = download_checksum_warning(
+            "4dbede38d219d5e194cabe3863cab2ca",
+            "eccef295b1bfee6ffd98a4bd75717f08",
+        );
+
+        assert_eq!(
+            warning.as_deref(),
+            Some(
+                "download completed but md5 mismatch: local=4dbede38d219d5e194cabe3863cab2ca, remote=eccef295b1bfee6ffd98a4bd75717f08"
+            )
+        );
+    }
 }
 
 fn decode_hex(hex: &str) -> Result<Vec<u8>, QuarkPanError> {
