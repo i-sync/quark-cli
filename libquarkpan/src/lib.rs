@@ -32,7 +32,7 @@ compile_error!("enable exactly one TLS backend feature for libquarkpan");
 compile_error!("enable only one TLS backend feature for libquarkpan");
 
 pub use crate::download::{DownloadBuilder, DownloadRequest};
-pub use crate::error::{QuarkPanError, Result};
+pub use crate::error::{QuarkPanError, Result, RetryClass};
 pub use crate::folder::CreateFolderBuilder;
 pub use crate::list::{ListBuilder, ListRequest};
 pub use crate::model::{

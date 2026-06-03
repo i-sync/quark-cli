@@ -15,6 +15,7 @@ use crate::QuarkPanError;
 pub struct TransferProgress {
     pub transferred: u64,
     pub total: Option<u64>,
+    pub reconnects: u32,
 }
 
 #[derive(Clone)]
@@ -35,6 +36,7 @@ impl TransferControl {
         let (progress_tx, _progress_rx) = watch::channel(TransferProgress {
             transferred: 0,
             total,
+            reconnects: 0,
         });
         Self {
             inner: Arc::new(TransferInner {
@@ -72,7 +74,14 @@ impl TransferControl {
     fn advance(&self, delta: u64) {
         let mut current = *self.inner.progress_tx.borrow();
         current.transferred = current.transferred.saturating_add(delta);
-        let _ = self.inner.progress_tx.send(current);
+        self.inner.progress_tx.send_replace(current);
+    }
+
+    /// Increments the reconnect counter for long-running transfer UIs.
+    pub fn increment_reconnects(&self) {
+        let mut current = *self.inner.progress_tx.borrow();
+        current.reconnects = current.reconnects.saturating_add(1);
+        self.inner.progress_tx.send_replace(current);
     }
 
     /// Marks the transfer as complete so progress UIs can render a final 100% state.
@@ -81,7 +90,32 @@ impl TransferControl {
         if let Some(total) = current.total {
             current.transferred = total;
         }
-        let _ = self.inner.progress_tx.send(current);
+        self.inner.progress_tx.send_replace(current);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_transfer_progress_starts_with_zero_reconnects() {
+        let control = TransferControl::new(Some(100));
+
+        assert_eq!(control.snapshot().reconnects, 0);
+    }
+
+    #[test]
+    fn increment_reconnects_updates_progress_snapshot() {
+        let control = TransferControl::new(Some(100));
+
+        control.increment_reconnects();
+        control.increment_reconnects();
+
+        let snapshot = control.snapshot();
+        assert_eq!(snapshot.reconnects, 2);
+        assert_eq!(snapshot.transferred, 0);
+        assert_eq!(snapshot.total, Some(100));
     }
 }
 

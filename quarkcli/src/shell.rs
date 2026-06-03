@@ -5,16 +5,16 @@ use libquarkpan::{ListPage, QuarkEntry, QuarkPan, QuarkPanError};
 
 use crate::{
     DeleteArgs, DownloadArgs, DownloadDirArgs, FolderArgs, FolderCommand, FolderCreateArgs,
-    OutputFlags, RenameArgs, UploadArgs, UploadDirArgs, find_entry_by_name, handle_delete,
-    handle_download, handle_download_dir, handle_folder, handle_rename, handle_upload,
-    handle_upload_dir, list_all_entries, print_list_output,
+    OutputFlags, RenameArgs, RetryBackoff, RetryMode, UploadArgs, UploadDirArgs, VerifyMode,
+    find_entry_by_name, handle_delete, handle_download, handle_download_dir, handle_folder,
+    handle_rename, handle_upload, handle_upload_dir, list_all_entries, print_list_output,
 };
 
 const DEFAULT_PAGE_SIZE: u32 = 100;
 
-struct ShellState {
-    current_fid: String,
-    current_path: String,
+pub(crate) struct ShellState {
+    pub(crate) current_fid: String,
+    pub(crate) current_path: String,
 }
 
 impl Default for ShellState {
@@ -23,6 +23,12 @@ impl Default for ShellState {
             current_fid: "0".to_string(),
             current_path: "/".to_string(),
         }
+    }
+}
+
+impl ShellState {
+    pub(crate) fn root() -> Self {
+        Self::default()
     }
 }
 
@@ -42,6 +48,12 @@ pub enum ShellCommand {
         local_path: Option<PathBuf>,
         continue_transfer: bool,
         overwrite: bool,
+        retry: RetryMode,
+        retry_delay: u64,
+        retry_max_delay: u64,
+        retry_backoff: RetryBackoff,
+        verify: VerifyMode,
+        no_verify: bool,
     },
     Put {
         local_path: PathBuf,
@@ -97,7 +109,7 @@ pub async fn run_shell(
     print_shell_help();
     let stdin = std::io::stdin();
     loop {
-        print!("quarkpan:{}> ", state.current_path);
+        print!("quark:{}> ", state.current_path);
         std::io::stdout().flush()?;
         let mut line = String::new();
         if stdin.read_line(&mut line)? == 0 {
@@ -153,6 +165,12 @@ async fn execute_shell_command(
             local_path,
             continue_transfer,
             overwrite,
+            retry,
+            retry_delay,
+            retry_max_delay,
+            retry_backoff,
+            verify,
+            no_verify,
         } => {
             let (entry, path) = resolve_entry_path(quark_pan, state, &remote_path).await?;
             let output = local_path.unwrap_or_else(|| PathBuf::from(&entry.file_name));
@@ -165,8 +183,10 @@ async fn execute_shell_command(
                         output,
                         continue_download: continue_transfer,
                         overwrite,
-                        retry: 5,
-                        retry_delay: 2,
+                        retry,
+                        retry_delay,
+                        retry_max_delay,
+                        retry_backoff,
                     },
                 )
                 .await?;
@@ -185,8 +205,12 @@ async fn execute_shell_command(
                         stdout: false,
                         overwrite,
                         continue_download: continue_transfer,
-                        retry: 5,
-                        retry_delay: 2,
+                        retry,
+                        retry_delay,
+                        retry_max_delay,
+                        retry_backoff,
+                        verify,
+                        no_verify,
                     },
                 )
                 .await?;
@@ -282,7 +306,7 @@ async fn execute_shell_command(
     Ok(())
 }
 
-async fn resolve_dir_path(
+pub(crate) async fn resolve_dir_path(
     quark_pan: &QuarkPan,
     state: &ShellState,
     path: Option<&str>,
@@ -320,7 +344,7 @@ async fn resolve_dir_path(
     Ok((current_fid, absolute))
 }
 
-async fn resolve_entry_path(
+pub(crate) async fn resolve_entry_path(
     quark_pan: &QuarkPan,
     state: &ShellState,
     path: &str,
@@ -344,7 +368,7 @@ async fn resolve_entry_path(
     Ok((entry, absolute))
 }
 
-async fn resolve_parent_and_name(
+pub(crate) async fn resolve_parent_and_name(
     quark_pan: &QuarkPan,
     state: &ShellState,
     path: &str,
@@ -355,7 +379,7 @@ async fn resolve_parent_and_name(
     Ok((parent_fid, name))
 }
 
-fn split_remote_parent_name(path: &str) -> Result<(String, String), QuarkPanError> {
+pub(crate) fn split_remote_parent_name(path: &str) -> Result<(String, String), QuarkPanError> {
     let trimmed = path.trim_end_matches('/');
     if trimmed.is_empty() || trimmed == "/" {
         return Err(QuarkPanError::invalid_argument(
@@ -374,7 +398,7 @@ fn split_remote_parent_name(path: &str) -> Result<(String, String), QuarkPanErro
     Ok((parent.to_string(), name.to_string()))
 }
 
-fn absolute_remote_path(current_path: &str, path: &str) -> String {
+pub(crate) fn absolute_remote_path(current_path: &str, path: &str) -> String {
     if path.starts_with('/') {
         normalize_remote_path(path)
     } else {
@@ -435,7 +459,7 @@ fn fid_display_path(fid: &str) -> String {
     format!("/@fid:{}", &fid[..8])
 }
 
-fn is_quark_fid(value: &str) -> bool {
+pub(crate) fn is_quark_fid(value: &str) -> bool {
     value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
@@ -449,7 +473,7 @@ fn confirm(prompt: &str) -> Result<bool, Box<dyn std::error::Error>> {
 
 fn print_shell_help() {
     println!(
-        "Interactive commands: ls|dir [path-or-fid], cd <path-or-fid>, pwd, get <path-or-fid> [local] [-c] [-o], put <local> [remote_dir-or-fid] [-c] [-o], mkdir <path>, rm <path-or-fid>, mv <path-or-fid> <new_name>, help, exit"
+        "Interactive commands: ls|dir [path-or-fid], cd <path-or-fid>, pwd, get <path-or-fid> [local] [-c] [-o] [--retry auto|infinite|N] [--retry-delay N] [--retry-max-delay N] [--retry-backoff exponential|fixed] [--no-verify], put <local> [remote_dir-or-fid] [-c] [-o], mkdir <path>, rm <path-or-fid>, mv <path-or-fid> <new_name>, help, exit"
     );
 }
 
@@ -489,10 +513,39 @@ fn parse_get(args: &[String]) -> Result<ShellCommand, QuarkPanError> {
     let mut positional = Vec::new();
     let mut continue_transfer = false;
     let mut overwrite = false;
-    for arg in args {
+    let mut retry = RetryMode::Auto;
+    let mut retry_delay = 2;
+    let mut retry_max_delay = 60;
+    let mut retry_backoff = RetryBackoff::Exponential;
+    let mut verify = VerifyMode::Auto;
+    let mut no_verify = false;
+    let mut idx = 0;
+    while idx < args.len() {
+        let arg = &args[idx];
         match arg.as_str() {
             "-c" | "--continue" => continue_transfer = true,
             "-o" | "--overwrite" => overwrite = true,
+            "--retry" => {
+                idx += 1;
+                retry = parse_option_value("get", "--retry", args.get(idx))?;
+            }
+            "--retry-delay" => {
+                idx += 1;
+                retry_delay = parse_option_value("get", "--retry-delay", args.get(idx))?;
+            }
+            "--retry-max-delay" => {
+                idx += 1;
+                retry_max_delay = parse_option_value("get", "--retry-max-delay", args.get(idx))?;
+            }
+            "--retry-backoff" => {
+                idx += 1;
+                retry_backoff = parse_option_value("get", "--retry-backoff", args.get(idx))?;
+            }
+            "--verify" => {
+                idx += 1;
+                verify = parse_option_value("get", "--verify", args.get(idx))?;
+            }
+            "--no-verify" => no_verify = true,
             _ if arg.starts_with('-') => {
                 return Err(QuarkPanError::invalid_argument(format!(
                     "unknown get option: {arg}"
@@ -500,10 +553,16 @@ fn parse_get(args: &[String]) -> Result<ShellCommand, QuarkPanError> {
             }
             _ => positional.push(arg.clone()),
         }
+        idx += 1;
     }
     if positional.is_empty() || positional.len() > 2 {
         return Err(QuarkPanError::invalid_argument(
-            "usage: get <remote_path> [local_path] [-c] [-o]",
+            "usage: get <remote_path> [local_path] [-c] [-o] [--retry auto|infinite|N] [--retry-delay N] [--retry-max-delay N] [--retry-backoff exponential|fixed] [--no-verify]",
+        ));
+    }
+    if no_verify && verify != VerifyMode::Auto {
+        return Err(QuarkPanError::invalid_argument(
+            "--no-verify cannot be used with --verify",
         ));
     }
     Ok(ShellCommand::Get {
@@ -511,7 +570,30 @@ fn parse_get(args: &[String]) -> Result<ShellCommand, QuarkPanError> {
         local_path: positional.get(1).map(PathBuf::from),
         continue_transfer,
         overwrite,
+        retry,
+        retry_delay,
+        retry_max_delay,
+        retry_backoff,
+        verify,
+        no_verify,
     })
+}
+
+fn parse_option_value<T>(
+    command: &str,
+    option: &str,
+    value: Option<&String>,
+) -> Result<T, QuarkPanError>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    value
+        .ok_or_else(|| {
+            QuarkPanError::invalid_argument(format!("usage: {command} {option} <value>"))
+        })?
+        .parse::<T>()
+        .map_err(|err| QuarkPanError::invalid_argument(format!("invalid {option}: {err}")))
 }
 
 fn parse_put(args: &[String]) -> Result<ShellCommand, QuarkPanError> {
@@ -588,6 +670,36 @@ mod tests {
                 local_path: Some("./0531".into()),
                 continue_transfer: true,
                 overwrite: false,
+                retry: RetryMode::Auto,
+                retry_delay: 2,
+                retry_max_delay: 60,
+                retry_backoff: RetryBackoff::Exponential,
+                verify: VerifyMode::Auto,
+                no_verify: false,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_get_with_retry_options() {
+        let command = parse_shell_command(
+            "get /tvtemp/01.mp4 ./01.mp4 --retry infinite --retry-delay 1 --retry-max-delay 30 --retry-backoff fixed --no-verify -o",
+        )
+        .unwrap();
+
+        assert_eq!(
+            command,
+            ShellCommand::Get {
+                remote_path: "/tvtemp/01.mp4".to_string(),
+                local_path: Some("./01.mp4".into()),
+                continue_transfer: false,
+                overwrite: true,
+                retry: RetryMode::Infinite,
+                retry_delay: 1,
+                retry_max_delay: 30,
+                retry_backoff: RetryBackoff::Fixed,
+                verify: VerifyMode::Auto,
+                no_verify: true,
             }
         );
     }

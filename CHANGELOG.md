@@ -6,20 +6,29 @@ The format loosely follows Keep a Changelog, and this workspace currently uses s
 
 ## [0.4.0] - 2026-03-18
 
+### Added
+
+- Renamed the CLI package to `quarkcli` and the installed command to `quark`.
+- Added path-first commands: `get`, `put`, `ls`, `rm`, `mkdir`, `mv`, and `stat`.
+- Added `--format json` / `--json` output mode for automation.
+- Added `probe download --fid <fid>` for download diagnostics.
+- Added legacy `quarkpan` config lookup while writing new config to `quarkcli`.
+- Added `.part` download files, checksum-failing completion, retry classification, reconnect counts, and configurable retry backoff.
+
 ### Changed
 
-- Bumped the workspace, `libquarkpan`, and `quarkpan` versions from `0.3.0` to `0.4.0`.
+- Bumped the workspace, `libquarkpan`, and `quarkcli` versions from `0.3.0` to `0.4.0`.
 - Upgraded `libquarkpan` from `reqwest 0.12.x` to `reqwest 0.13.2`.
-- Renamed the public TLS feature set in `libquarkpan` and `quarkpan` to align with `reqwest 0.13`, using `default-tls`, `native-tls`, `native-tls-vendored`, `rustls`, and `rustls-no-provider`.
+- Renamed the public TLS feature set in `libquarkpan` and `quarkcli` to align with `reqwest 0.13`, using `default-tls`, `native-tls`, `native-tls-vendored`, `rustls`, and `rustls-no-provider`.
 
 ## [0.3.0] - 2026-03-18
 
 ### Changed
 
 - Changed `libquarkpan::QuarkPan::delete` from single-`fid` deletion to batch deletion with multiple `fid` values. This is a breaking API change.
-- Added `quarkpan delete` and batch deletion via repeated `--fid` arguments.
-- Bumped the workspace, `libquarkpan`, and `quarkpan` versions from `0.2.0` to `0.3.0`.
-- Added selectable TLS backend features for `libquarkpan` and `quarkpan`, with `rustls-tls` as the default and explicit forwarding for `native-tls` and other `reqwest` TLS variants.
+- Added `quark delete` and batch deletion via repeated `--fid` arguments.
+- Bumped the workspace, `libquarkpan`, and `quarkcli` versions from `0.2.0` to `0.3.0`.
+- Added selectable TLS backend features for `libquarkpan` and `quarkcli`, with `rustls-tls` as the default and explicit forwarding for `native-tls` and other `reqwest` TLS variants.
 
 ## [0.1.0] - 2026-03-15
 
@@ -30,14 +39,14 @@ The format loosely follows Keep a Changelog, and this workspace currently uses s
 - Added folder creation and folder listing support.
 - Added file download by file ID with stream-based consumption.
 - Added upload preparation, rapid-upload detection, and chunked upload support.
-- Added `quarkpan` CLI with `list`, `folder create`, `download`, and `upload`.
+- Added `quarkcli` CLI with `list`, `folder create`, `download`, and `upload`.
 
 ## [0.2.0] - 2026-03-17
 
 ### Changed
 
 - Changed public library builders and CLI parameters to align with Quark API naming, using `fid`, `pdir_fid`, and `file_name` instead of mixed semantic aliases such as `file_id`, `folder_id`, `parent_folder`, and `name`.
-- Changed upload and download result payloads in `libquarkpan` and `quarkpan` output structures to use `fid`.
+- Changed upload and download result payloads in `libquarkpan` and `quarkcli` output structures to use `fid`.
 - Changed examples and READMEs to use the new naming consistently.
 
 ## [0.1.1] - 2026-03-15
@@ -51,8 +60,8 @@ The format loosely follows Keep a Changelog, and this workspace currently uses s
 - Added `download-dir` and `upload-dir` commands with directory task files.
 - Added explicit retry logic for interrupted downloads and multipart uploads.
 - Added file deletion support in `libquarkpan` for overwrite workflows.
-- Added file and folder rename support in `libquarkpan` and the `quarkpan rename` command.
-- Expanded `quarkpan` CLI with `auth`, `download-dir`, and `upload-dir`.
+- Added file and folder rename support in `libquarkpan` and the `quark rename` command.
+- Expanded the `quark` CLI with `auth`, `download-dir`, and `upload-dir`.
 
 ### Changed
 

@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::str::FromStr;
 use std::time::Duration;
 
 use base64::{Engine as _, engine::general_purpose};
@@ -13,7 +14,7 @@ use futures_util::Stream;
 use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use libquarkpan::{
-    ListPage, ProgressStream, QuarkEntry, QuarkPan, QuarkPanError, TransferControl,
+    ListPage, ProgressStream, QuarkEntry, QuarkPan, QuarkPanError, RetryClass, TransferControl,
     TransferProgress, UploadPrepareResult, UploadResume, UploadResumeState,
 };
 use owo_colors::OwoColorize;
@@ -22,8 +23,10 @@ use sha1::Digest;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio_util::io::ReaderStream;
 
+use crate::shell::ShellState;
+
 #[derive(Parser, Debug)]
-#[command(name = "quarkpan", version, about)]
+#[command(name = "quark", version, about = "Command-line client for Quark Drive")]
 struct Cli {
     #[arg(long, env = "QUARK_COOKIE")]
     cookie: Option<String>,
@@ -33,11 +36,17 @@ struct Cli {
     config_file: Option<PathBuf>,
     #[arg(long)]
     api_base_url: Option<String>,
-    #[arg(long)]
+    #[arg(long, global = true)]
     quiet: bool,
-    #[arg(long)]
+    #[arg(long, global = true)]
     no_progress: bool,
-    #[arg(long, value_enum)]
+    #[arg(long, global = true)]
+    debug: bool,
+    #[arg(long, value_enum, default_value_t = OutputFormat::Table, global = true)]
+    format: OutputFormat,
+    #[arg(long, conflicts_with = "format", global = true)]
+    json: bool,
+    #[arg(long, value_enum, global = true)]
     color: Option<ColorMode>,
     #[command(subcommand)]
     command: Commands,
@@ -50,16 +59,93 @@ enum ColorMode {
     Never,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, ValueEnum)]
+enum VerifyMode {
+    Auto,
+    Always,
+    Never,
+}
+
+impl FromStr for VerifyMode {
+    type Err = QuarkPanError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "auto" => Ok(Self::Auto),
+            "always" => Ok(Self::Always),
+            "never" => Ok(Self::Never),
+            _ => Err(QuarkPanError::invalid_argument(
+                "verify must be auto, always, or never",
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum RetryMode {
+    Auto,
+    Infinite,
+    Count(u32),
+}
+
+impl FromStr for RetryMode {
+    type Err = QuarkPanError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "auto" => Ok(Self::Auto),
+            "infinite" => Ok(Self::Infinite),
+            _ => value.parse::<u32>().map(Self::Count).map_err(|_| {
+                QuarkPanError::invalid_argument("retry must be auto, infinite, or a number")
+            }),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub(crate) enum RetryBackoff {
+    Exponential,
+    Fixed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum OutputFormat {
+    Table,
+    Json,
+}
+
+impl FromStr for RetryBackoff {
+    type Err = QuarkPanError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "exponential" => Ok(Self::Exponential),
+            "fixed" => Ok(Self::Fixed),
+            _ => Err(QuarkPanError::invalid_argument(
+                "retry backoff must be exponential or fixed",
+            )),
+        }
+    }
+}
+
 #[derive(Subcommand, Debug)]
 enum Commands {
     Auth(AuthArgs),
     Delete(DeleteArgs),
+    Get(GetArgs),
+    Ls(LsArgs),
     List(ListArgs),
     Download(DownloadArgs),
     DownloadDir(DownloadDirArgs),
     Folder(FolderArgs),
+    Mkdir(MkdirArgs),
+    Mv(MvArgs),
+    Probe(ProbeArgs),
+    Put(PutArgs),
     Rename(RenameArgs),
+    Rm(RmArgs),
     Shell,
+    Stat(StatArgs),
     Upload(UploadArgs),
     UploadDir(UploadDirArgs),
 }
@@ -103,6 +189,87 @@ pub(crate) struct DeleteArgs {
 }
 
 #[derive(Args, Debug, Clone)]
+pub(crate) struct GetArgs {
+    remote_path_or_fid: String,
+    local_path: Option<PathBuf>,
+    #[arg(long, short = 'o')]
+    overwrite: bool,
+    #[arg(long = "continue", short = 'c')]
+    continue_download: bool,
+    #[arg(long, default_value = "auto")]
+    retry: RetryMode,
+    #[arg(long, default_value_t = 2)]
+    retry_delay: u64,
+    #[arg(long, default_value_t = 60)]
+    retry_max_delay: u64,
+    #[arg(long, value_enum, default_value_t = RetryBackoff::Exponential)]
+    retry_backoff: RetryBackoff,
+    #[arg(long, value_enum, default_value_t = VerifyMode::Auto)]
+    verify: VerifyMode,
+    #[arg(long, conflicts_with = "verify")]
+    no_verify: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+pub(crate) struct PutArgs {
+    local_path: PathBuf,
+    remote_dir_or_fid: Option<String>,
+    #[arg(long, short = 'c')]
+    r#continue: bool,
+    #[arg(long, short = 'o')]
+    overwrite: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+pub(crate) struct LsArgs {
+    remote_path_or_fid: Option<String>,
+    #[arg(long)]
+    long: bool,
+    #[arg(long)]
+    raw_time: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+pub(crate) struct RmArgs {
+    remote_path_or_fid: String,
+    #[arg(long)]
+    yes: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+pub(crate) struct MkdirArgs {
+    remote_path: String,
+}
+
+#[derive(Args, Debug, Clone)]
+pub(crate) struct MvArgs {
+    remote_path_or_fid: String,
+    new_name_or_path: String,
+}
+
+#[derive(Args, Debug, Clone)]
+pub(crate) struct StatArgs {
+    remote_path_or_fid: String,
+}
+
+#[derive(Args, Debug)]
+pub(crate) struct ProbeArgs {
+    #[command(subcommand)]
+    command: ProbeCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum ProbeCommand {
+    Download(ProbeDownloadArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub(crate) struct ProbeDownloadArgs {
+    #[arg(long)]
+    fid: String,
+}
+
+#[derive(Args, Debug, Clone)]
 pub(crate) struct ListArgs {
     #[arg(long, default_value = "0")]
     pdir_fid: String,
@@ -132,10 +299,28 @@ pub(crate) struct DownloadArgs {
     overwrite: bool,
     #[arg(long = "continue", short = 'c')]
     continue_download: bool,
-    #[arg(long, default_value_t = 5)]
-    retry: u32,
+    #[arg(long, default_value = "auto")]
+    retry: RetryMode,
     #[arg(long, default_value_t = 2)]
     retry_delay: u64,
+    #[arg(long, default_value_t = 60)]
+    retry_max_delay: u64,
+    #[arg(long, value_enum, default_value_t = RetryBackoff::Exponential)]
+    retry_backoff: RetryBackoff,
+    #[arg(long, value_enum, default_value_t = VerifyMode::Auto)]
+    verify: VerifyMode,
+    #[arg(long, conflicts_with = "verify")]
+    no_verify: bool,
+}
+
+impl DownloadArgs {
+    fn verify_mode(&self) -> VerifyMode {
+        if self.no_verify {
+            VerifyMode::Never
+        } else {
+            self.verify
+        }
+    }
 }
 
 #[derive(Args, Debug, Clone)]
@@ -148,10 +333,14 @@ pub(crate) struct DownloadDirArgs {
     continue_download: bool,
     #[arg(long, short = 'o')]
     overwrite: bool,
-    #[arg(long, default_value_t = 5)]
-    retry: u32,
+    #[arg(long, default_value = "auto")]
+    retry: RetryMode,
     #[arg(long, default_value_t = 2)]
     retry_delay: u64,
+    #[arg(long, default_value_t = 60)]
+    retry_max_delay: u64,
+    #[arg(long, value_enum, default_value_t = RetryBackoff::Exponential)]
+    retry_backoff: RetryBackoff,
 }
 
 #[derive(Args, Debug)]
@@ -213,6 +402,8 @@ pub(crate) struct UploadDirArgs {
 pub(crate) struct OutputFlags {
     quiet: bool,
     no_progress: bool,
+    debug: bool,
+    format: OutputFormat,
     color: bool,
     interactive: bool,
 }
@@ -225,9 +416,27 @@ struct AppConfig {
 
 #[derive(Debug, Clone)]
 struct AppPaths {
-    config_dir: PathBuf,
     config_file: PathBuf,
     cookie_file: PathBuf,
+    source: AppPathSource,
+    write_config_dir: PathBuf,
+    write_cookie_file: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum AppPathSource {
+    Explicit,
+    New,
+    Legacy,
+}
+
+impl AppPathSource {
+    fn stored_source(self) -> &'static str {
+        match self {
+            AppPathSource::Explicit | AppPathSource::New => "persisted_cookie",
+            AppPathSource::Legacy => "stored-legacy",
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -256,6 +465,7 @@ struct DeleteOutput {
 struct AuthSourceOutput {
     source: String,
     path: Option<String>,
+    legacy: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -266,12 +476,55 @@ struct HashOutput {
     sha1: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct ProbeDownloadOutput {
+    fid: String,
+    download_url: String,
+    md5: String,
+    range: String,
+    first_bytes: usize,
+    sensitive_download_url: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct StatOutput {
+    fid: String,
+    name: String,
+    dir: bool,
+    size: u64,
+    updated_at: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct DownloadTask {
     kind: String,
     fid: String,
     output_path: String,
+    part_path: String,
     md5: Option<String>,
+    size: Option<u64>,
+    verify: VerifyMode,
+}
+
+impl DownloadTask {
+    fn new(
+        fid: String,
+        output_path: &Path,
+        part_path: &Path,
+        md5: Option<String>,
+        size: Option<u64>,
+        verify: VerifyMode,
+    ) -> Self {
+        Self {
+            kind: "download".to_string(),
+            fid,
+            output_path: output_path.to_string_lossy().to_string(),
+            part_path: part_path.to_string_lossy().to_string(),
+            md5,
+            size,
+            verify,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -361,6 +614,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let flags = OutputFlags {
         quiet: cli.quiet,
         no_progress: cli.no_progress,
+        debug: cli.debug,
+        format: if cli.json {
+            OutputFormat::Json
+        } else {
+            cli.format
+        },
         color: resolve_color(cli.color.or(config.color).unwrap_or(ColorMode::Auto)),
         interactive: std::io::stderr().is_terminal(),
     };
@@ -382,12 +641,20 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Commands::Auth(_) => unreachable!(),
         Commands::Delete(args) => handle_delete(flags, &quark_pan, args).await?,
+        Commands::Get(args) => handle_get(flags, &quark_pan, args).await?,
+        Commands::Ls(args) => handle_ls(flags, &quark_pan, args).await?,
         Commands::List(args) => handle_list(flags, &quark_pan, args).await?,
         Commands::Download(args) => handle_download(flags, &quark_pan, args).await?,
         Commands::DownloadDir(args) => handle_download_dir(flags, &quark_pan, args).await?,
         Commands::Folder(args) => handle_folder(flags, &quark_pan, args).await?,
+        Commands::Mkdir(args) => handle_mkdir(flags, &quark_pan, args).await?,
+        Commands::Mv(args) => handle_mv(flags, &quark_pan, args).await?,
+        Commands::Probe(args) => handle_probe(flags, &quark_pan, args).await?,
+        Commands::Put(args) => handle_put(flags, &quark_pan, args).await?,
         Commands::Rename(args) => handle_rename(flags, &quark_pan, args).await?,
+        Commands::Rm(args) => handle_rm(flags, &quark_pan, args).await?,
         Commands::Shell => shell::run_shell(flags, &quark_pan).await?,
+        Commands::Stat(args) => handle_stat(flags, &quark_pan, args).await?,
         Commands::Upload(args) => handle_upload(flags, &quark_pan, args).await?,
         Commands::UploadDir(args) => handle_upload_dir(flags, &quark_pan, args).await?,
     }
@@ -404,30 +671,88 @@ fn validate_cli(cli: &Cli) -> Result<(), QuarkPanError> {
 }
 
 fn app_paths(config_file: Option<PathBuf>) -> Result<AppPaths, QuarkPanError> {
+    let Some(new_dirs) = ProjectDirs::from("", "", new_app_name()) else {
+        return Err(QuarkPanError::invalid_argument(
+            "cannot resolve platform config directory",
+        ));
+    };
+    let Some(legacy_dirs) = ProjectDirs::from("", "", legacy_app_name()) else {
+        return Err(QuarkPanError::invalid_argument(
+            "cannot resolve platform config directory",
+        ));
+    };
+    select_app_paths(
+        config_file,
+        new_dirs.config_dir().to_path_buf(),
+        legacy_dirs.config_dir().to_path_buf(),
+    )
+}
+
+fn new_app_name() -> &'static str {
+    "quarkcli"
+}
+
+fn legacy_app_name() -> &'static str {
+    "quarkpan"
+}
+
+fn select_app_paths(
+    config_file: Option<PathBuf>,
+    new_config_dir: PathBuf,
+    legacy_config_dir: PathBuf,
+) -> Result<AppPaths, QuarkPanError> {
+    let new_exists = config_or_cookie_exists(&new_config_dir);
+    let legacy_exists = config_or_cookie_exists(&legacy_config_dir);
+    select_existing_app_paths(
+        config_file,
+        new_config_dir,
+        new_exists,
+        legacy_config_dir,
+        legacy_exists,
+    )
+}
+
+fn select_existing_app_paths(
+    config_file: Option<PathBuf>,
+    new_config_dir: PathBuf,
+    new_exists: bool,
+    legacy_config_dir: PathBuf,
+    legacy_exists: bool,
+) -> Result<AppPaths, QuarkPanError> {
     if let Some(config_file) = config_file {
         let config_dir = config_file
             .parent()
             .ok_or_else(|| QuarkPanError::invalid_argument("invalid --config-file path"))?
             .to_path_buf();
         return Ok(AppPaths {
-            config_dir: config_dir.clone(),
-            config_file,
+            config_file: config_file.clone(),
             cookie_file: config_dir.join("cookie.txt"),
+            source: AppPathSource::Explicit,
+            write_config_dir: config_dir.clone(),
+            write_cookie_file: config_dir.join("cookie.txt"),
         });
     }
-    let dirs = ProjectDirs::from("", "", "quarkpan").ok_or_else(|| {
-        QuarkPanError::invalid_argument("cannot resolve platform config directory")
-    })?;
-    let config_dir = dirs.config_dir().to_path_buf();
+
+    let (config_dir, source) = if new_exists || !legacy_exists {
+        (new_config_dir.clone(), AppPathSource::New)
+    } else {
+        (legacy_config_dir, AppPathSource::Legacy)
+    };
     Ok(AppPaths {
         config_file: config_dir.join("config.toml"),
         cookie_file: config_dir.join("cookie.txt"),
-        config_dir,
+        source,
+        write_cookie_file: new_config_dir.join("cookie.txt"),
+        write_config_dir: new_config_dir,
     })
 }
 
+fn config_or_cookie_exists(config_dir: &Path) -> bool {
+    config_dir.join("config.toml").exists() || config_dir.join("cookie.txt").exists()
+}
+
 async fn ensure_config_dir(paths: &AppPaths) -> Result<(), Box<dyn std::error::Error>> {
-    tokio::fs::create_dir_all(&paths.config_dir).await?;
+    tokio::fs::create_dir_all(&paths.write_config_dir).await?;
     Ok(())
 }
 
@@ -480,34 +805,37 @@ async fn handle_auth(
                     "one of --cookie, --from-stdin, --from-nano, or --from-vi is required",
                 )));
             };
-            tokio::fs::write(&paths.cookie_file, format!("{}\n", cookie.trim())).await?;
+            tokio::fs::write(&paths.write_cookie_file, format!("{}\n", cookie.trim())).await?;
             print_output(
                 flags,
                 &AuthSourceOutput {
                     source: "persisted_cookie".to_string(),
-                    path: Some(paths.cookie_file.display().to_string()),
+                    path: Some(paths.write_cookie_file.display().to_string()),
+                    legacy: false,
                 },
             )?;
         }
         AuthCommand::ImportCookie(args) => {
             ensure_config_dir(paths).await?;
             let cookie = tokio::fs::read_to_string(args.from_file).await?;
-            tokio::fs::write(&paths.cookie_file, format!("{}\n", cookie.trim())).await?;
+            tokio::fs::write(&paths.write_cookie_file, format!("{}\n", cookie.trim())).await?;
             print_output(
                 flags,
                 &AuthSourceOutput {
                     source: "persisted_cookie".to_string(),
-                    path: Some(paths.cookie_file.display().to_string()),
+                    path: Some(paths.write_cookie_file.display().to_string()),
+                    legacy: false,
                 },
             )?;
         }
         AuthCommand::ClearCookie => {
-            remove_if_exists(&paths.cookie_file).await?;
+            remove_if_exists(&paths.write_cookie_file).await?;
             print_output(
                 flags,
                 &AuthSourceOutput {
                     source: "cleared".to_string(),
-                    path: Some(paths.cookie_file.display().to_string()),
+                    path: Some(paths.write_cookie_file.display().to_string()),
+                    legacy: false,
                 },
             )?;
         }
@@ -520,16 +848,19 @@ async fn handle_auth(
                 AuthSourceOutput {
                     source: "env".to_string(),
                     path: None,
+                    legacy: false,
                 }
             } else if paths.cookie_file.exists() {
                 AuthSourceOutput {
-                    source: "persisted_cookie".to_string(),
+                    source: paths.source.stored_source().to_string(),
                     path: Some(paths.cookie_file.display().to_string()),
+                    legacy: paths.source == AppPathSource::Legacy,
                 }
             } else {
                 AuthSourceOutput {
                     source: "none".to_string(),
                     path: None,
+                    legacy: false,
                 }
             };
             print_output(flags, &output)?;
@@ -577,6 +908,270 @@ async fn handle_delete(
     Ok(())
 }
 
+async fn handle_ls(
+    flags: OutputFlags,
+    quark_pan: &QuarkPan,
+    args: LsArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let state = ShellState::root();
+    let (pdir_fid, _) =
+        shell::resolve_dir_path(quark_pan, &state, args.remote_path_or_fid.as_deref()).await?;
+    let entries = list_all_entries(quark_pan, &pdir_fid, 100).await?;
+    let page = ListPage {
+        entries,
+        page: 1,
+        size: 100,
+        total: 0,
+    };
+    print_list_output(flags, &page, args.long, args.raw_time)
+}
+
+async fn handle_get(
+    flags: OutputFlags,
+    quark_pan: &QuarkPan,
+    args: GetArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let state = ShellState::root();
+    let (entry, _) = shell::resolve_entry_path(quark_pan, &state, &args.remote_path_or_fid).await?;
+    let output = args
+        .local_path
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(&entry.file_name));
+    if entry.dir {
+        return handle_download_dir(
+            flags,
+            quark_pan,
+            DownloadDirArgs {
+                pdir_fid: entry.fid,
+                output,
+                continue_download: args.continue_download,
+                overwrite: args.overwrite,
+                retry: args.retry,
+                retry_delay: args.retry_delay,
+                retry_max_delay: args.retry_max_delay,
+                retry_backoff: args.retry_backoff,
+            },
+        )
+        .await;
+    }
+    let output = if output.is_dir() {
+        output.join(&entry.file_name)
+    } else {
+        output
+    };
+    handle_download(
+        flags,
+        quark_pan,
+        DownloadArgs {
+            fid: entry.fid,
+            output: Some(output),
+            stdout: false,
+            overwrite: args.overwrite,
+            continue_download: args.continue_download,
+            retry: args.retry,
+            retry_delay: args.retry_delay,
+            retry_max_delay: args.retry_max_delay,
+            retry_backoff: args.retry_backoff,
+            verify: args.verify,
+            no_verify: args.no_verify,
+        },
+    )
+    .await
+}
+
+async fn handle_put(
+    flags: OutputFlags,
+    quark_pan: &QuarkPan,
+    args: PutArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let state = ShellState::root();
+    let (pdir_fid, _) =
+        shell::resolve_dir_path(quark_pan, &state, args.remote_dir_or_fid.as_deref()).await?;
+    if args.local_path.is_dir() {
+        handle_upload_dir(
+            flags,
+            quark_pan,
+            UploadDirArgs {
+                pdir_fid,
+                dir: args.local_path,
+                file_name: None,
+                r#continue: args.r#continue,
+                overwrite: args.overwrite,
+            },
+        )
+        .await
+    } else {
+        handle_upload(
+            flags,
+            quark_pan,
+            UploadArgs {
+                pdir_fid,
+                file: args.local_path,
+                file_name: None,
+                r#continue: args.r#continue,
+                overwrite: args.overwrite,
+            },
+        )
+        .await
+    }
+}
+
+async fn handle_rm(
+    flags: OutputFlags,
+    quark_pan: &QuarkPan,
+    args: RmArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let state = ShellState::root();
+    let (entry, path) =
+        shell::resolve_entry_path(quark_pan, &state, &args.remote_path_or_fid).await?;
+    if !args.yes && flags.interactive {
+        eprint!("delete {path}? [y/N] ");
+        std::io::stderr().flush()?;
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        if !answer.trim().eq_ignore_ascii_case("y") && !answer.trim().eq_ignore_ascii_case("yes") {
+            return Ok(());
+        }
+    } else if !args.yes {
+        return Err(Box::new(QuarkPanError::invalid_argument(
+            "refusing to delete without --yes in non-interactive mode",
+        )));
+    }
+    handle_delete(
+        flags,
+        quark_pan,
+        DeleteArgs {
+            fid: vec![entry.fid],
+        },
+    )
+    .await
+}
+
+async fn handle_mkdir(
+    flags: OutputFlags,
+    quark_pan: &QuarkPan,
+    args: MkdirArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let state = ShellState::root();
+    let (pdir_fid, file_name) =
+        shell::resolve_parent_and_name(quark_pan, &state, &args.remote_path).await?;
+    handle_folder(
+        flags,
+        quark_pan,
+        FolderArgs {
+            command: FolderCommand::Create(FolderCreateArgs {
+                pdir_fid,
+                file_name,
+            }),
+        },
+    )
+    .await
+}
+
+async fn handle_mv(
+    flags: OutputFlags,
+    quark_pan: &QuarkPan,
+    args: MvArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if args.new_name_or_path.contains('/') {
+        return Err(Box::new(QuarkPanError::invalid_argument(
+            "mv only supports renaming within the same remote directory",
+        )));
+    }
+    let state = ShellState::root();
+    let (entry, _) = shell::resolve_entry_path(quark_pan, &state, &args.remote_path_or_fid).await?;
+    handle_rename(
+        flags,
+        quark_pan,
+        RenameArgs {
+            fid: entry.fid,
+            file_name: args.new_name_or_path,
+        },
+    )
+    .await
+}
+
+async fn handle_stat(
+    flags: OutputFlags,
+    quark_pan: &QuarkPan,
+    args: StatArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let state = ShellState::root();
+    let (entry, _) = shell::resolve_entry_path(quark_pan, &state, &args.remote_path_or_fid).await?;
+    print_output(
+        flags,
+        &StatOutput {
+            fid: entry.fid,
+            name: entry.file_name,
+            dir: entry.dir,
+            size: entry.size,
+            updated_at: entry.updated_at,
+        },
+    )
+}
+
+async fn handle_probe(
+    flags: OutputFlags,
+    quark_pan: &QuarkPan,
+    args: ProbeArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match args.command {
+        ProbeCommand::Download(args) => handle_probe_download(flags, quark_pan, args).await,
+    }
+}
+
+async fn handle_probe_download(
+    flags: OutputFlags,
+    quark_pan: &QuarkPan,
+    args: ProbeDownloadArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let request = quark_pan.download().fid(args.fid.clone()).prepare()?;
+    let info = request.info().await?;
+    let download_url_present = !info.download_url.trim().is_empty();
+    let md5_present = info
+        .md5
+        .as_deref()
+        .is_some_and(|md5| !md5.trim().is_empty());
+    let mut first_bytes = 0usize;
+    let range = match quark_pan
+        .download()
+        .fid(args.fid.clone())
+        .start_offset(1)
+        .prepare()?
+        .stream()
+        .await
+    {
+        Ok(mut stream) => match stream.next().await {
+            Some(Ok(bytes)) => {
+                first_bytes = bytes.len().min(16);
+                "ok".to_string()
+            }
+            Some(Err(err)) => format!("failed: {err}"),
+            None => "ok".to_string(),
+        },
+        Err(err) => format!("failed: {err}"),
+    };
+    print_output(
+        flags,
+        &ProbeDownloadOutput {
+            fid: info.fid,
+            download_url: if download_url_present {
+                "present".to_string()
+            } else {
+                "missing".to_string()
+            },
+            md5: if md5_present {
+                "present".to_string()
+            } else {
+                "missing".to_string()
+            },
+            range,
+            first_bytes,
+            sensitive_download_url: flags.debug.then_some(info.download_url),
+        },
+    )
+}
+
 async fn handle_list_more(
     flags: OutputFlags,
     quark_pan: &QuarkPan,
@@ -615,6 +1210,10 @@ pub(crate) fn print_list_output(
     long: bool,
     raw_time: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if flags.format == OutputFormat::Json {
+        println!("{}", serde_json::to_string_pretty(page)?);
+        return Ok(());
+    }
     if !flags.quiet {
         println!(
             "page={} shown={} total={}{}",
@@ -698,10 +1297,12 @@ async fn download_file(
     }
 
     let info = request.info().await?;
+    let verify_mode = args.verify_mode();
     let output = args.output.clone().expect("checked above");
+    let part_path = partial_download_path(&output);
     let task_path = file_task_path(&output);
     if has_same_download_target(&output, info.md5.as_deref()).await? {
-        cleanup_download_artifacts(&output, &task_path).await?;
+        cleanup_download_resume_artifacts(&part_path, &task_path).await?;
         if !flags.quiet {
             eprintln!("download skipped: local file already matches remote md5");
         }
@@ -709,47 +1310,59 @@ async fn download_file(
     }
 
     if let Some(task) = read_json_file::<DownloadTask>(&task_path).await? {
-        let same_target = task.fid == args.fid && task.output_path == output.to_string_lossy();
+        let same_target = task.fid == args.fid
+            && task.output_path == output.to_string_lossy()
+            && task.part_path == part_path.to_string_lossy();
         if !same_target {
-            cleanup_download_artifacts(&output, &task_path).await?;
+            cleanup_download_resume_artifacts(&part_path, &task_path).await?;
         }
     }
 
-    if output.exists() && !args.overwrite && !args.continue_download {
+    if output.exists() && !args.overwrite {
         return Err(Box::new(QuarkPanError::invalid_argument(format!(
-            "output already exists: {} (use --overwrite or --continue)",
+            "output already exists: {} (use --overwrite)",
             output.display()
         ))));
     }
-    if args.overwrite && output.exists() && !args.continue_download {
-        cleanup_download_artifacts(&output, &task_path).await?;
+    if args.overwrite && !args.continue_download {
+        cleanup_download_artifacts(&output, &part_path, &task_path).await?;
     }
 
-    let task = DownloadTask {
-        kind: "download".to_string(),
-        fid: args.fid.clone(),
-        output_path: output.to_string_lossy().to_string(),
-        md5: info.md5.clone(),
-    };
+    let task = DownloadTask::new(
+        args.fid.clone(),
+        &output,
+        &part_path,
+        info.md5.clone(),
+        None,
+        verify_mode,
+    );
     write_json_file(&task_path, &task).await?;
 
     download_with_retry(
         flags,
         quark_pan,
         &args.fid,
-        &output,
+        &part_path,
         args.continue_download,
-        args.retry,
+        &args.retry,
         args.retry_delay,
+        args.retry_max_delay,
+        args.retry_backoff,
     )
     .await?;
 
-    if let Some(md5) = info.md5.as_deref() {
-        let local = md5_file(&output).await?;
-        if let Some(warning) = download_checksum_warning(&local, md5) {
-            eprintln!("warning: {warning}");
+    let local = md5_file(&part_path).await?;
+    match verify_download_checksum(verify_mode, &local, info.md5.as_deref())? {
+        VerificationOutcome::Verified | VerificationOutcome::NotAvailable => {}
+        VerificationOutcome::Skipped if !flags.quiet => {
+            eprintln!("download verification skipped");
         }
+        VerificationOutcome::Skipped => {}
     }
+    if args.overwrite {
+        remove_if_exists(&output).await?;
+    }
+    tokio::fs::rename(&part_path, &output).await?;
     remove_if_exists(&task_path).await?;
     Ok(())
 }
@@ -760,8 +1373,10 @@ async fn download_with_retry(
     fid: &str,
     output: &Path,
     allow_continue: bool,
-    retry: u32,
+    retry: &RetryMode,
     retry_delay: u64,
+    retry_max_delay: u64,
+    retry_backoff: RetryBackoff,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let control = if flags.no_progress || flags.quiet || !flags.interactive {
         None
@@ -788,13 +1403,17 @@ async fn download_with_retry(
         let raw_stream = builder.prepare()?.stream().await;
         let raw_stream = match raw_stream {
             Ok(stream) => stream,
-            Err(err @ QuarkPanError::Cancelled) => return Err(Box::new(err)),
-            Err(err) if attempts < retry => {
+            Err(err) if should_retry_download(retry, attempts, &err) => {
                 attempts += 1;
-                tokio::time::sleep(Duration::from_secs(retry_delay)).await;
-                if !flags.quiet {
-                    eprintln!("download stream retry {attempts}/{retry}: {err}");
+                if let Some(control) = &control {
+                    control.increment_reconnects();
                 }
+                if flags.debug && !flags.quiet {
+                    eprintln!("download reconnect {attempts}: {err}");
+                }
+                let sleep_secs =
+                    retry_sleep_secs(attempts, retry_delay, retry_max_delay, retry_backoff);
+                tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
                 continue;
             }
             Err(err) => return Err(Box::new(err)),
@@ -830,23 +1449,63 @@ async fn download_with_retry(
                 }
                 return Ok(());
             }
-            Err(err)
-                if err
-                    .downcast_ref::<QuarkPanError>()
-                    .is_some_and(|e| matches!(e, QuarkPanError::Cancelled)) =>
-            {
-                return Err(err);
-            }
-            Err(err) if attempts < retry => {
+            Err(err) if should_retry_boxed_download(retry, attempts, err.as_ref()) => {
                 attempts += 1;
-                if !flags.quiet {
-                    eprintln!("download retry {attempts}/{retry}: {err}");
+                if let Some(control) = &control {
+                    control.increment_reconnects();
                 }
-                tokio::time::sleep(Duration::from_secs(retry_delay)).await;
+                if flags.debug && !flags.quiet {
+                    eprintln!("download reconnect {attempts}: {err}");
+                }
+                let sleep_secs =
+                    retry_sleep_secs(attempts, retry_delay, retry_max_delay, retry_backoff);
+                tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
             }
             Err(err) => return Err(err),
         }
     }
+}
+
+fn should_retry_download(retry: &RetryMode, attempts: u32, err: &QuarkPanError) -> bool {
+    is_retryable_error(err) && retry_allows_attempt(retry, attempts)
+}
+
+fn should_retry_boxed_download(
+    retry: &RetryMode,
+    attempts: u32,
+    err: &(dyn std::error::Error + 'static),
+) -> bool {
+    is_retryable_boxed_error(err) && retry_allows_attempt(retry, attempts)
+}
+
+fn retry_allows_attempt(retry: &RetryMode, attempts: u32) -> bool {
+    match retry {
+        RetryMode::Auto => attempts < 1000,
+        RetryMode::Infinite => true,
+        RetryMode::Count(limit) => attempts < *limit,
+    }
+}
+
+fn retry_sleep_secs(attempt: u32, base: u64, max: u64, backoff: RetryBackoff) -> u64 {
+    match backoff {
+        RetryBackoff::Fixed => base.min(max),
+        RetryBackoff::Exponential => {
+            let shift = attempt.saturating_sub(1).min(6);
+            base.saturating_mul(1_u64 << shift).min(max)
+        }
+    }
+}
+
+fn is_retryable_error(err: &QuarkPanError) -> bool {
+    matches!(
+        err.retry_class(),
+        RetryClass::Transient | RetryClass::RateLimited
+    )
+}
+
+fn is_retryable_boxed_error(err: &(dyn std::error::Error + 'static)) -> bool {
+    err.downcast_ref::<QuarkPanError>()
+        .is_some_and(is_retryable_error)
 }
 
 pub(crate) async fn handle_download_dir(
@@ -928,8 +1587,12 @@ pub(crate) async fn handle_download_dir(
             stdout: false,
             overwrite: merge_mode,
             continue_download: args.continue_download,
-            retry: args.retry,
+            retry: args.retry.clone(),
             retry_delay: args.retry_delay,
+            retry_max_delay: args.retry_max_delay,
+            retry_backoff: args.retry_backoff,
+            verify: VerifyMode::Auto,
+            no_verify: false,
         };
         match download_file(flags, quark_pan, &file_args).await {
             Ok(()) => task.entries[idx].status = DirEntryStatus::Done,
@@ -1465,6 +2128,12 @@ fn file_task_path(path: &Path) -> PathBuf {
     PathBuf::from(format!("{base}.quark.task"))
 }
 
+fn partial_download_path(output: &Path) -> PathBuf {
+    let mut path = output.as_os_str().to_os_string();
+    path.push(".part");
+    PathBuf::from(path)
+}
+
 fn dir_task_path(path: &Path) -> Result<PathBuf, QuarkPanError> {
     let parent = path
         .parent()
@@ -1478,9 +2147,18 @@ fn dir_task_path(path: &Path) -> Result<PathBuf, QuarkPanError> {
 
 async fn cleanup_download_artifacts(
     output: &Path,
+    part_path: &Path,
     task_path: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     remove_if_exists(output).await?;
+    cleanup_download_resume_artifacts(part_path, task_path).await
+}
+
+async fn cleanup_download_resume_artifacts(
+    part_path: &Path,
+    task_path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    remove_if_exists(part_path).await?;
     remove_if_exists(task_path).await?;
     Ok(())
 }
@@ -1560,6 +2238,10 @@ fn print_output<T: Serialize>(
     data: &T,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let value = serde_json::to_value(data)?;
+    if flags.format == OutputFormat::Json {
+        println!("{}", serde_json::to_string_pretty(&value)?);
+        return Ok(());
+    }
     if let Ok(upload) = serde_json::from_value::<UploadDoneOutput>(value.clone()) {
         let rendered = if upload.rapid_upload {
             format!("rapid upload completed: {}", upload.fid)
@@ -1605,6 +2287,15 @@ fn print_output<T: Serialize>(
             println!("{}", rendered.green());
         } else {
             println!("{rendered}");
+        }
+    } else if let Ok(probe) = serde_json::from_value::<ProbeDownloadOutput>(value.clone()) {
+        println!("fid: {}", probe.fid);
+        println!("download_url: {}", probe.download_url);
+        println!("md5: {}", probe.md5);
+        println!("range: {}", probe.range);
+        println!("first_bytes: {}", probe.first_bytes);
+        if let Some(url) = probe.sensitive_download_url {
+            println!("sensitive_download_url: {url}");
         }
     } else {
         let rendered = serde_json::to_string_pretty(&value)?;
@@ -1662,7 +2353,7 @@ fn temporary_cookie_path(editor: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    std::env::temp_dir().join(format!("quarkpan-cookie-{editor}-{pid}-{nanos}.txt"))
+    std::env::temp_dir().join(format!("quark-cookie-{editor}-{pid}-{nanos}.txt"))
 }
 
 fn md5_matches_remote(local_hex_md5: &str, remote_md5: &str) -> bool {
@@ -1675,14 +2366,37 @@ fn md5_matches_remote(local_hex_md5: &str, remote_md5: &str) -> bool {
     general_purpose::STANDARD.encode(raw) == remote_md5
 }
 
-fn download_checksum_warning(local_hex_md5: &str, remote_md5: &str) -> Option<String> {
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum VerificationOutcome {
+    Verified,
+    NotAvailable,
+    Skipped,
+}
+
+fn verify_download_checksum(
+    mode: VerifyMode,
+    local_hex_md5: &str,
+    remote_md5: Option<&str>,
+) -> Result<VerificationOutcome, QuarkPanError> {
+    if mode == VerifyMode::Never {
+        return Ok(VerificationOutcome::Skipped);
+    }
+    let Some(remote_md5) = remote_md5.filter(|value| !value.trim().is_empty()) else {
+        return match mode {
+            VerifyMode::Always => Err(QuarkPanError::invalid_argument(
+                "download verification required but remote md5 is missing",
+            )),
+            VerifyMode::Auto => Ok(VerificationOutcome::NotAvailable),
+            VerifyMode::Never => Ok(VerificationOutcome::Skipped),
+        };
+    };
     if md5_matches_remote(local_hex_md5, remote_md5) {
-        None
+        Ok(VerificationOutcome::Verified)
     } else {
-        Some(format!(
-            "download completed but md5 mismatch: local={}, remote={}",
+        Err(QuarkPanError::invalid_argument(format!(
+            "download md5 mismatch: local={}, remote={}",
             local_hex_md5, remote_md5
-        ))
+        )))
     }
 }
 
@@ -1691,18 +2405,259 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mismatched_download_md5_is_reported_as_warning() {
-        let warning = download_checksum_warning(
+    fn app_paths_uses_explicit_config_file_exactly() {
+        let base = std::env::temp_dir().join("quarkcli-test-explicit");
+        let config_file = base.join("custom.toml");
+
+        let paths = select_app_paths(
+            Some(config_file.clone()),
+            base.join("new"),
+            base.join("legacy"),
+        )
+        .unwrap();
+
+        assert_eq!(paths.source, AppPathSource::Explicit);
+        assert_eq!(paths.config_file, config_file);
+        assert_eq!(paths.cookie_file, base.join("cookie.txt"));
+        assert_eq!(paths.write_config_dir, base);
+    }
+
+    #[test]
+    fn app_paths_prefers_existing_new_config_path() {
+        let base = std::env::temp_dir().join("quarkcli-test-new");
+        let new_dir = base.join("quarkcli");
+        let legacy_dir = base.join("quarkpan");
+
+        let paths = select_app_paths(None, new_dir.clone(), legacy_dir).unwrap();
+
+        assert_eq!(paths.source, AppPathSource::New);
+        assert_eq!(paths.config_file, new_dir.join("config.toml"));
+        assert_eq!(paths.write_config_dir, new_dir);
+    }
+
+    #[test]
+    fn app_paths_accepts_legacy_when_new_missing() {
+        let base = std::env::temp_dir().join("quarkcli-test-legacy");
+        let new_dir = base.join("quarkcli");
+        let legacy_dir = base.join("quarkpan");
+
+        let paths =
+            select_existing_app_paths(None, new_dir.clone(), false, legacy_dir.clone(), true)
+                .unwrap();
+
+        assert_eq!(paths.source, AppPathSource::Legacy);
+        assert_eq!(paths.config_file, legacy_dir.join("config.toml"));
+        assert_eq!(paths.cookie_file, legacy_dir.join("cookie.txt"));
+        assert_eq!(paths.write_config_dir, new_dir);
+        assert_eq!(paths.write_cookie_file, new_dir.join("cookie.txt"));
+    }
+
+    #[test]
+    fn legacy_auth_source_is_identified() {
+        assert_eq!(AppPathSource::Legacy.stored_source(), "stored-legacy");
+    }
+
+    #[test]
+    fn verify_auto_fails_on_remote_md5_mismatch() {
+        let outcome = verify_download_checksum(
+            VerifyMode::Auto,
             "4dbede38d219d5e194cabe3863cab2ca",
-            "eccef295b1bfee6ffd98a4bd75717f08",
+            Some("eccef295b1bfee6ffd98a4bd75717f08"),
         );
 
-        assert_eq!(
-            warning.as_deref(),
-            Some(
-                "download completed but md5 mismatch: local=4dbede38d219d5e194cabe3863cab2ca, remote=eccef295b1bfee6ffd98a4bd75717f08"
-            )
+        assert!(outcome.is_err());
+    }
+
+    #[test]
+    fn verify_never_allows_mismatch() {
+        let outcome = verify_download_checksum(
+            VerifyMode::Never,
+            "4dbede38d219d5e194cabe3863cab2ca",
+            Some("eccef295b1bfee6ffd98a4bd75717f08"),
         );
+
+        assert!(matches!(outcome, Ok(VerificationOutcome::Skipped)));
+    }
+
+    #[test]
+    fn verify_always_fails_when_remote_md5_missing() {
+        let outcome =
+            verify_download_checksum(VerifyMode::Always, "4dbede38d219d5e194cabe3863cab2ca", None);
+
+        assert!(outcome.is_err());
+    }
+
+    #[test]
+    fn partial_download_path_appends_part_suffix() {
+        assert_eq!(
+            partial_download_path(Path::new("file.bin")),
+            PathBuf::from("file.bin.part")
+        );
+    }
+
+    #[test]
+    fn download_task_tracks_output_and_part_paths() {
+        let output = PathBuf::from("file.bin");
+        let part = partial_download_path(&output);
+        let task = DownloadTask::new(
+            "fid1".to_string(),
+            &output,
+            &part,
+            Some("remote-md5".to_string()),
+            Some(42),
+            VerifyMode::Auto,
+        );
+
+        assert_eq!(task.output_path, "file.bin");
+        assert_eq!(task.part_path, "file.bin.part");
+        assert_eq!(task.verify, VerifyMode::Auto);
+    }
+
+    #[test]
+    fn retry_helper_retries_transient_quark_errors_only() {
+        let transient = QuarkPanError::Io(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "interrupted",
+        ));
+        let hard = QuarkPanError::invalid_argument("bad request");
+
+        assert!(is_retryable_error(&transient));
+        assert!(!is_retryable_error(&hard));
+    }
+
+    #[test]
+    fn retry_mode_parses_auto() {
+        assert_eq!("auto".parse::<RetryMode>().unwrap(), RetryMode::Auto);
+    }
+
+    #[test]
+    fn retry_mode_parses_infinite() {
+        assert_eq!(
+            "infinite".parse::<RetryMode>().unwrap(),
+            RetryMode::Infinite
+        );
+    }
+
+    #[test]
+    fn retry_mode_parses_number() {
+        assert_eq!("300".parse::<RetryMode>().unwrap(), RetryMode::Count(300));
+    }
+
+    #[test]
+    fn retry_sleep_uses_exponential_backoff_with_cap() {
+        assert_eq!(retry_sleep_secs(1, 2, 60, RetryBackoff::Exponential), 2);
+        assert_eq!(retry_sleep_secs(3, 2, 60, RetryBackoff::Exponential), 8);
+        assert_eq!(retry_sleep_secs(10, 2, 60, RetryBackoff::Exponential), 60);
+    }
+
+    #[test]
+    fn retry_sleep_uses_fixed_backoff_with_cap() {
+        assert_eq!(retry_sleep_secs(3, 120, 60, RetryBackoff::Fixed), 60);
+    }
+
+    #[test]
+    fn progress_message_includes_reconnect_count_only_when_nonzero() {
+        assert_eq!(
+            progress_message("download file.bin", 0),
+            "download file.bin"
+        );
+        assert_eq!(
+            progress_message("download file.bin", 3),
+            "download file.bin reconnects:3"
+        );
+    }
+
+    #[test]
+    fn parses_path_first_get_command() {
+        let cli =
+            Cli::try_parse_from(["quark", "get", "/tvtemp/01.mp4", "./01.mp4", "-c"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Commands::Get(GetArgs {
+                remote_path_or_fid,
+                local_path: Some(_),
+                continue_download: true,
+                ..
+            }) if remote_path_or_fid == "/tvtemp/01.mp4"
+        ));
+    }
+
+    #[test]
+    fn parses_path_first_mutation_commands() {
+        assert!(matches!(
+            Cli::try_parse_from(["quark", "put", "./file.bin", "/backup/"])
+                .unwrap()
+                .command,
+            Commands::Put(PutArgs { .. })
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["quark", "ls", "/"]).unwrap().command,
+            Commands::Ls(LsArgs { .. })
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["quark", "rm", "/old.bin", "--yes"])
+                .unwrap()
+                .command,
+            Commands::Rm(RmArgs { yes: true, .. })
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["quark", "mkdir", "/backup/new"])
+                .unwrap()
+                .command,
+            Commands::Mkdir(MkdirArgs { .. })
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["quark", "mv", "/old.bin", "new.bin"])
+                .unwrap()
+                .command,
+            Commands::Mv(MvArgs { .. })
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["quark", "stat", "/file.bin"])
+                .unwrap()
+                .command,
+            Commands::Stat(StatArgs { .. })
+        ));
+    }
+
+    #[test]
+    fn parses_json_output_flags() {
+        let cli = Cli::try_parse_from(["quark", "--json", "ls", "/"]).unwrap();
+        assert!(cli.json);
+
+        let cli = Cli::try_parse_from(["quark", "ls", "/", "--json"]).unwrap();
+        assert!(cli.json);
+
+        let cli = Cli::try_parse_from(["quark", "--format", "json", "stat", "/file.bin"]).unwrap();
+        assert_eq!(cli.format, OutputFormat::Json);
+    }
+
+    #[test]
+    fn parses_probe_download_command() {
+        let cli = Cli::try_parse_from(["quark", "probe", "download", "--fid", "abc123"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Commands::Probe(ProbeArgs {
+                command: ProbeCommand::Download(ProbeDownloadArgs { fid })
+            }) if fid == "abc123"
+        ));
+    }
+
+    #[test]
+    fn stat_output_uses_name_field_for_json() {
+        let value = serde_json::to_value(StatOutput {
+            fid: "fid1".to_string(),
+            name: "file.bin".to_string(),
+            dir: false,
+            size: 123,
+            updated_at: 456,
+        })
+        .unwrap();
+
+        assert_eq!(value["name"], "file.bin");
+        assert!(value.get("file_name").is_none());
     }
 }
 
@@ -1768,10 +2723,18 @@ fn create_progress_bar(label: &str, total: Option<u64>) -> ProgressBar {
 }
 
 fn update_progress_bar(progress_bar: &ProgressBar, label: &str, progress: TransferProgress) {
-    progress_bar.set_message(label.to_string());
+    progress_bar.set_message(progress_message(label, progress.reconnects));
     progress_bar.set_position(progress.transferred);
     if progress.total.is_none() {
         progress_bar.tick();
+    }
+}
+
+fn progress_message(label: &str, reconnects: u32) -> String {
+    if reconnects == 0 {
+        label.to_string()
+    } else {
+        format!("{label} reconnects:{reconnects}")
     }
 }
 

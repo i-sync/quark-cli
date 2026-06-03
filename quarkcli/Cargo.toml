@@ -1,15 +1,19 @@
 [package]
-name = "quarkpan"
+name = "quarkcli"
 version = { workspace = true }
 edition = "2024"
 description = "Command-line client for Quark Drive based on libquarkpan"
 license = "GPL-3.0-only"
 readme = "README.md"
 homepage = { workspace = true }
-documentation = "https://docs.rs/quarkpan"
+documentation = "https://docs.rs/quarkcli"
 repository = { workspace = true }
 keywords = ["quark", "quark-drive", "cli", "upload", "download"]
 categories = ["command-line-utilities"]
+
+[[bin]]
+name = "quark"
+path = "src/main.rs"
 
 [features]
 default = ["default-tls"]

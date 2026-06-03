@@ -1,7 +1,7 @@
 [workspace]
 members = [
     "libquarkpan",
-    "quarkpan",
+    "quarkcli",
 ]
 resolver = "3"
 

@@ -6,7 +6,7 @@ use base64::{Engine as _, engine::general_purpose};
 use dashmap::DashMap;
 use futures_util::StreamExt;
 use reqwest::StatusCode;
-use reqwest::header::{HeaderMap, HeaderValue, RANGE};
+use reqwest::header::{ACCEPT_ENCODING, HeaderMap, HeaderValue, RANGE};
 use serde::Serialize;
 
 use crate::error::{QuarkPanError, Result};
@@ -40,6 +40,8 @@ impl ApiClient {
         let mut headers = HeaderMap::new();
         headers.insert("Origin", HeaderValue::from_static(ORIGIN));
         headers.insert("Referer", HeaderValue::from_static(REFERER));
+        let mut download_headers = headers.clone();
+        download_headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
         let pool_size: usize = min(num_cpus::get().saturating_mul(2), 16).max(3);
         let client = reqwest::Client::builder()
             .user_agent(UA)
@@ -51,7 +53,11 @@ impl ApiClient {
             .build()?;
         let download_client = reqwest::Client::builder()
             .user_agent(UA)
-            .default_headers(headers)
+            .default_headers(download_headers)
+            .no_gzip()
+            .no_brotli()
+            .no_deflate()
+            .no_zstd()
             .pool_idle_timeout(Duration::from_secs(50))
             .pool_max_idle_per_host(pool_size)
             .connect_timeout(Duration::from_secs(10))
