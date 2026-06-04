@@ -1,114 +1,125 @@
 # quark-cli
 
-`quark-cli` 是一个围绕夸克网盘接口的 Rust workspace，当前包含一个核心库和一个命令行工具。安装后的 CLI 命令是 `quark`：
+`quark-cli` 是一个面向夸克网盘的命令行工具，安装后使用的命令名是 `quark`。它适合在服务器、NAS、脚本和日常终端里上传、下载、查看、移动、删除夸克网盘文件。
 
-- `libquarkpan`
-  Rust 异步库，负责夸克网盘的目录列表、目录创建、下载、上传、分片上传和恢复相关能力。
-- `quarkcli`
-  基于 `libquarkpan` 的命令行程序，提供交互式 shell 和可脚本化的上传、下载、列目录、建目录等命令。
+这个 README 面向第一次使用命令行工具的用户，先说明怎么下载安装，再说明怎么登录和完成常见操作。
 
-## 当前状态
+## 下载和安装
 
-当前 workspace 重点覆盖以下能力：
+推荐从 GitHub Releases 下载已经编译好的可执行文件，不需要本地安装 Rust 或 Cargo。
 
-- 使用 Quark Cookie 构造客户端
-- 平台标准配置目录中的 Cookie 持久化
-- 列出目录内容
-- 创建目录
-- 删除一个或多个文件或目录项
-- 重命名文件或目录项
-- 交互式 shell：`ls`、`dir`、`cd`、`pwd`、`get`、`put`、`mkdir`、`rm`、`mv`
-- 按文件 ID 下载
-- 按目录 ID 批量下载目录
-- 路径优先命令：`ls`、`get`、`put`、`rm`、`mkdir`、`mv`、`stat`
-- 在 shell 中按路径或 FID 浏览、下载、上传、删除、重命名
-- JSON 输出和 `probe download` 诊断命令
-- 上传预检和快传判断
-- 非快传场景下的分片上传
-- 批量上传本地目录
-- 传输进度监听
-- 仅在交互式终端中显示彩色进度条
-- Ctrl+C 取消传输
-- 基于 `${filename}.part` 和 `${filename}.quark.task` 的下载恢复机制
-- 基于 `目录名.quark.task` 的目录任务恢复机制
+常见平台对应文件名：
 
-## TLS Features
+- Linux x86_64: `quark-linux-x86_64.tar.gz`
+- Linux ARM64: `quark-linux-aarch64.tar.gz`
+- macOS Intel: `quark-macos-x86_64.tar.gz`
+- macOS Apple Silicon: `quark-macos-aarch64.tar.gz`
+- Windows x86_64: `quark-windows-x86_64.zip`
 
-`libquarkpan` 和 `quarkcli` 都支持通过 Cargo feature 选择 TLS backend，命名与 `reqwest 0.13` 对齐，默认使用 `default-tls`。
-
-可选 feature：
-
-- `default-tls`
-- `native-tls`
-- `native-tls-vendored`
-- `rustls`
-- `rustls-no-provider`
-
-约束：
-
-- 必须且只能启用一个 TLS backend feature
-
-示例：
+Linux 或 macOS 示例：
 
 ```bash
-cargo check -p libquarkpan
-cargo check -p libquarkpan --no-default-features --features native-tls
+tar -xzf quark-linux-x86_64.tar.gz
+chmod +x quark
+./quark --help
+sudo mv quark /usr/local/bin/quark
 ```
 
-底层库接口仍然以文件 ID 和目录 ID 为主；CLI 已提供路径优先命令和 `quark shell`。
+Windows 示例：
 
-## Workspace 结构
+```powershell
+.\quark.exe --help
+```
 
-### `libquarkpan`
+如果你想从源码安装，仍然可以使用 Cargo：
 
-适合以下场景：
+```bash
+cargo install --git https://github.com/i-sync/quark-cli quarkcli
+```
 
-- 你需要在自己的程序里直接接入夸克网盘
-- 你希望自行管理上传流、下载流和恢复策略
-- 你希望把目录同步、备份或其他业务逻辑放在自己的应用层
+Cargo 包名是 `quarkcli`，安装后的命令名仍然是 `quark`。
 
-### `quarkcli`
+## 第一次使用：设置 Cookie
 
-适合以下场景：
+`quark` 使用夸克网盘网页端 Cookie 访问你的账号。Cookie 是私人凭据，不要发给别人，不要提交到 Git 仓库，也不要写进公开脚本。
 
-- 你只需要一个可执行文件
-- 你希望直接在终端通过 `quark get`、`quark put` 或 `quark shell` 完成上传、下载和目录操作
-- 你希望中断后依靠 `.quark.task` 文件恢复传输
-
-## Cookie 说明
-
-当前客户端使用浏览器或官方客户端中登录后的 Cookie 发起请求。
-
-常见使用方式：
-
-- 直接通过 `--cookie 'k1=v1; k2=v2'` 传入
-- 或写入文件后通过 `--cookie-file ./cookie.txt` 读取
-- 或在 CLI 中使用环境变量 `QUARK_COOKIE`
-- 或通过 `quark auth set-cookie` 持久化到系统配置目录
-
-Cookie 需要是完整的 `key=value; key2=value2` 形式。
-`quark auth set-cookie` 需要显式指定输入来源，例如 `--from-stdin`、`--from-nano` 或 `--from-vi`。
-使用 `--from-stdin` 时，CLI 会先提示粘贴 Cookie 再回车。
-
-## 典型操作步骤
-
-首次使用：
+推荐从标准输入保存 Cookie：
 
 ```bash
 quark auth set-cookie --from-stdin
+```
+
+执行后把 Cookie 粘贴进去，然后按 `Ctrl+D` 结束输入。Windows PowerShell 里可按 `Ctrl+Z` 后回车结束。
+
+查看当前 Cookie 来源：
+
+```bash
 quark auth show-source
 ```
 
-已有 `quarkpan` 配置会被读取并标记为 legacy；新写入的 Cookie 使用 `quarkcli` 配置目录。
+也可以临时使用环境变量：
 
-路径优先命令：
+```bash
+QUARK_COOKIE='你的 Cookie' quark ls /
+```
+
+或者使用文件：
+
+```bash
+quark --cookie-file ./cookie.txt ls /
+```
+
+如果你以前用过旧的 `quarkpan` 配置，`quark` 会在新的配置不存在时兼容读取旧配置，方便迁移。
+
+## 最常用命令
+
+查看根目录：
 
 ```bash
 quark ls /
-quark get /tvtemp/01.mp4 ./01.mp4
+```
+
+查看某个目录：
+
+```bash
+quark ls /tvtemp
+```
+
+下载文件：
+
+```bash
+quark get /远端/文件.mp4 ./文件.mp4
+```
+
+上传文件到目录：
+
+```bash
 quark put ./backup.tar.gz /backup/
-quark rm /tvtemp/old.mp4 --yes
-quark stat /tvtemp/01.mp4 --json
+```
+
+创建目录：
+
+```bash
+quark mkdir /backup/new
+```
+
+重命名同一目录下的文件或文件夹：
+
+```bash
+quark mv /backup/old.bin new.bin
+```
+
+删除文件或目录：
+
+```bash
+quark rm /backup/old.bin --yes
+```
+
+查看文件详情：
+
+```bash
+quark stat /远端/文件.mp4
+quark stat /远端/文件.mp4 --json
 ```
 
 进入交互式 shell：
@@ -117,81 +128,116 @@ quark stat /tvtemp/01.mp4 --json
 quark shell
 ```
 
-常用交互命令：
+在 shell 里可以使用 `ls`、`cd`、`get`、`put`、`mkdir`、`mv`、`rm`、`stat` 等命令，适合连续操作同一个目录。
 
-```text
-quark:/> ls
-quark:/> cd "来自：分享"
-quark:/来自：分享> get "目录或文件名" ./output
-quark:/来自：分享> put ./local-file
-quark:/来自：分享> exit
-```
+## 下载大文件和断点续传
 
-单文件下载并支持恢复：
+大文件下载建议开启续传和自动重试：
 
 ```bash
-quark get /path/file.bin ./file.bin --continue --retry auto
-quark download --fid <fid> --output ./file.bin --continue
+quark get /tvtemp/01.mp4 ./01.mp4 --continue --retry auto
 ```
 
-单文件上传并支持恢复：
+网络很不稳定时，可以无限重试并设置延迟上限：
 
 ```bash
+quark get /tvtemp/01.mp4 ./01.mp4 --retry infinite --retry-delay 2 --retry-max-delay 60
+```
+
+也可以指定最多重试次数，并使用固定间隔：
+
+```bash
+quark get /tvtemp/01.mp4 ./01.mp4 --retry 300 --retry-backoff fixed
+```
+
+下载过程会先写入 `.part` 文件，恢复信息保存在 `.quark.task` 文件里。下载完成后，程序会先校验 `.part`，校验通过再重命名为最终文件。
+
+如果服务端提供 md5，默认会校验文件完整性。校验失败会报错，并保留 `.part` 和 `.quark.task`，方便排查或继续处理。`--no-verify` 可以跳过校验，但不推荐日常使用。
+
+进度条里出现 `reconnects:N` 表示下载流断开后已经自动重连了 N 次。需要看每次断线的详细原因时，加 `--debug`：
+
+```bash
+quark --debug get /tvtemp/01.mp4 ./01.mp4 --continue --retry auto
+```
+
+## 自动化和 JSON 输出
+
+脚本里建议使用 JSON 输出，方便用 `jq`、Python 或其他工具处理。
+
+```bash
+quark ls / --json
+quark stat /path/file --json
+quark get /path/file ./file --quiet --no-progress
+```
+
+普通表格和 JSON 会输出到 stdout，进度条和 debug 信息会输出到 stderr，便于脚本分离数据和日志。
+
+## 诊断下载问题
+
+如果某个文件下载慢、频繁断开，或者你想确认下载链接、md5、Range 支持情况，可以使用探测命令：
+
+```bash
+quark probe download --fid <file_fid>
+quark probe download --fid <file_fid> --json
+quark --debug probe download --fid <file_fid>
+```
+
+默认输出不会打印完整下载 URL，避免把敏感链接暴露到日志里。只有开启 `--debug` 时才会显示完整 URL，并标记为 sensitive。
+
+## 进阶命令：FID 模式
+
+大多数用户优先使用路径命令，例如 `quark get /目录/文件 ./文件`。如果你已经知道夸克网盘的 FID，也可以使用低层 FID 命令：
+
+```bash
+quark download --fid <file_fid> --output ./file.bin
+quark download-dir --pdir-fid <folder_fid> --output ./backup
 quark upload --file ./file.bin --pdir-fid 0
-quark upload --file ./file.bin --pdir-fid 0 -c
-```
-
-目录下载并支持恢复：
-
-```bash
-quark download-dir --pdir-fid <pdir_fid> --output ./backup
-quark download-dir --pdir-fid <pdir_fid> --output ./backup -c
-quark download-dir --pdir-fid <pdir_fid> --output ./backup -c -o
-```
-
-目录上传并支持恢复：
-
-```bash
 quark upload-dir --dir ./photos --pdir-fid 0
-quark upload-dir --dir ./photos --pdir-fid 0 -c
-quark upload-dir --dir ./photos --pdir-fid 0 -c -o
 ```
 
-重命名文件或目录项：
+根目录的父目录 FID 通常是 `0`。
+
+## 常见问题
+
+**命令叫 `quark` 还是 `quarkcli`？**
+
+Cargo 包名是 `quarkcli`，二进制命令名是 `quark`。日常使用都输入 `quark`。
+
+**为什么需要 Cookie？**
+
+`quark` 需要代表你的账号访问夸克网盘。Cookie 等同于登录凭据，请按密码级别保管。
+
+**可以在定时任务里使用吗？**
+
+可以。建议使用 `--quiet --no-progress`，需要机器可读结果时加 `--json`。
+
+**下载中断后怎么办？**
+
+保留 `.part` 和 `.quark.task`，重新运行同一个下载命令并加 `--continue`。
+
+**为什么不建议使用 `--no-verify`？**
+
+它会跳过完整性校验。只有在你明确知道服务端没有可靠校验信息，且愿意自行确认文件完整性时才使用。
+
+## 开发者说明
+
+本仓库是 Rust Cargo workspace，包含两个 crate：
+
+- `libquarkpan/`: 夸克网盘异步客户端库
+- `quarkcli/`: 基于库实现的命令行工具，安装后提供 `quark`
+
+常用开发命令：
 
 ```bash
-quark rename --fid <fid> --file-name 新名字
+cargo check --workspace
+cargo test --workspace
+cargo run -p quarkcli -- --help
 ```
 
-删除一个或多个文件或目录项：
-
-```bash
-quark delete --fid <fid1> --fid <fid2>
-```
-
-`Ctrl+C` 行为：
-
-- 会立即取消当前传输
-- 不会删除已生成的 `.part` 和 `.quark.task`
-- 之后可用 `-c` 继续
-- 服务端 md5 存在时，校验不匹配默认失败；`--no-verify` 可跳过但不推荐
-- 完成下载会先验证 `.part`，再原子重命名为最终文件
-
-进度条行为：
-
-- 只在交互式 TTY 中显示
-- 定时任务、管道、重定向默认不显示
-- 上传和下载都会显示当前文件名
-- 大文件重连会显示 `reconnects:N`；`--debug` 会显示原始重连错误
-
-## 文档
-
-- 根变更记录见 `CHANGELOG.md`
-- 核心库说明见 `libquarkpan/README.md`
-- CLI 说明见 `quarkcli/README.md`
+TLS feature 需要在 `default-tls`、`native-tls`、`native-tls-vendored`、`rustls`、`rustls-no-provider` 中选择一个。
 
 ## License And Attribution
 
-本仓库采用 `GPL-3.0-only` 协议发布，详见根目录 `LICENSE`。
+本项目采用 `GPL-3.0-only` 协议发布，详见 `LICENSE`。
 
 本项目基于 `niuhuan/quarkpan-rs` 修改分发；上游归属和修改说明见 `NOTICE.md`。
