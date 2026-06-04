@@ -2,7 +2,7 @@
 name = "quarkcli"
 version = { workspace = true }
 edition = "2024"
-description = "Command-line client for Quark Drive based on libquarkpan"
+description = "Practical command-line client for Quark Drive"
 license = "GPL-3.0-only"
 readme = "README.md"
 homepage = { workspace = true }
