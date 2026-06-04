@@ -190,6 +190,8 @@ quark delete --fid <fid1> --fid <fid2>
 - 核心库说明见 `libquarkpan/README.md`
 - CLI 说明见 `quarkcli/README.md`
 
-## License
+## License And Attribution
 
 本仓库采用 `GPL-3.0-only` 协议发布，详见根目录 `LICENSE`。
+
+本项目基于 `niuhuan/quarkpan-rs` 修改分发；上游归属和修改说明见 `NOTICE.md`。

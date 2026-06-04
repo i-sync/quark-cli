@@ -90,6 +90,8 @@ quark --debug probe download --fid <file_fid>
 
 默认不会打印完整下载 URL；`--debug` 会输出并标记为 sensitive。
 
-## License
+## License And Attribution
 
 `GPL-3.0-only`
+
+This package is part of `quark-cli`, a modified distribution based on `niuhuan/quarkpan-rs`. See the root `NOTICE.md` and `LICENSE`.
