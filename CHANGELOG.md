@@ -14,12 +14,16 @@ The format loosely follows Keep a Changelog, and this workspace currently uses s
 - Added `probe download --fid <fid>` for download diagnostics.
 - Added legacy `quarkpan` config lookup while writing new config to `quarkcli`.
 - Added `.part` download files, checksum-failing completion, retry classification, reconnect counts, and configurable retry backoff.
+- Added GPL attribution notice for the upstream project.
+- Added CI and tagged release workflows for multi-platform binaries.
 
 ### Changed
 
 - Bumped the workspace, `libquarkpan`, and `quarkcli` versions from `0.3.0` to `0.4.0`.
 - Upgraded `libquarkpan` from `reqwest 0.12.x` to `reqwest 0.13.2`.
 - Renamed the public TLS feature set in `libquarkpan` and `quarkcli` to align with `reqwest 0.13`, using `default-tls`, `native-tls`, `native-tls-vendored`, `rustls`, and `rustls-no-provider`.
+- Updated repository metadata to `github.com/i-sync/quark-cli`.
+- Reworked documentation around the `quark` command and binary downloads.
 
 ## [0.3.0] - 2026-03-18
 
