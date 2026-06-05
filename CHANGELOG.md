@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format loosely follows Keep a Changelog, and this workspace currently uses semantic versioning.
 
+## [0.4.2] - 2026-06-05
+
+### Fixed
+
+- Treat automatic download MD5 mismatches as warnings instead of hard failures, because Quark download metadata can disagree with the returned file bytes.
+
 ## [0.4.1] - 2026-06-05
 
 ### Fixed
