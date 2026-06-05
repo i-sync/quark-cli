@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format loosely follows Keep a Changelog, and this workspace currently uses semantic versioning.
 
+## [0.4.1] - 2026-06-05
+
+### Fixed
+
+- Restart a partial file from byte 0 when a resume request is rejected because the server ignores `Range`.
+- Preserve `get --no-verify` when downloading directories, including shell `get` directory downloads.
+
 ## [0.4.0] - 2026-03-18
 
 ### Added
