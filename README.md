@@ -15,6 +15,8 @@
 - macOS Apple Silicon: `quark-macos-aarch64.tar.gz`
 - Windows x86_64: `quark-windows-x86_64.zip`
 
+Linux x86_64 包在 Ubuntu 22.04 环境构建，适合 Debian 12、Ubuntu 22.04 或更新的 glibc 系统。
+
 Linux 或 macOS 示例：
 
 ```bash
