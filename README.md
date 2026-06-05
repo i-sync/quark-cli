@@ -12,7 +12,6 @@
 
 - Linux x86_64: `quark-linux-x86_64.tar.gz`
 - Linux ARM64: `quark-linux-aarch64.tar.gz`
-- macOS Intel: `quark-macos-x86_64.tar.gz`
 - macOS Apple Silicon: `quark-macos-aarch64.tar.gz`
 - Windows x86_64: `quark-windows-x86_64.zip`
 
