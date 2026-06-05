@@ -187,6 +187,8 @@ async fn execute_shell_command(
                         retry_delay,
                         retry_max_delay,
                         retry_backoff,
+                        verify,
+                        no_verify,
                     },
                 )
                 .await?;

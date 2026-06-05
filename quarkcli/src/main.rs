@@ -341,6 +341,35 @@ pub(crate) struct DownloadDirArgs {
     retry_max_delay: u64,
     #[arg(long, value_enum, default_value_t = RetryBackoff::Exponential)]
     retry_backoff: RetryBackoff,
+    #[arg(long, value_enum, default_value_t = VerifyMode::Auto)]
+    verify: VerifyMode,
+    #[arg(long, conflicts_with = "verify")]
+    no_verify: bool,
+}
+
+impl DownloadDirArgs {
+    fn from_get(pdir_fid: String, output: PathBuf, args: GetArgs) -> Self {
+        Self {
+            pdir_fid,
+            output,
+            continue_download: args.continue_download,
+            overwrite: args.overwrite,
+            retry: args.retry,
+            retry_delay: args.retry_delay,
+            retry_max_delay: args.retry_max_delay,
+            retry_backoff: args.retry_backoff,
+            verify: args.verify,
+            no_verify: args.no_verify,
+        }
+    }
+
+    fn verify_mode(&self) -> VerifyMode {
+        if self.no_verify {
+            VerifyMode::Never
+        } else {
+            self.verify
+        }
+    }
 }
 
 #[derive(Args, Debug)]
@@ -941,16 +970,7 @@ async fn handle_get(
         return handle_download_dir(
             flags,
             quark_pan,
-            DownloadDirArgs {
-                pdir_fid: entry.fid,
-                output,
-                continue_download: args.continue_download,
-                overwrite: args.overwrite,
-                retry: args.retry,
-                retry_delay: args.retry_delay,
-                retry_max_delay: args.retry_max_delay,
-                retry_backoff: args.retry_backoff,
-            },
+            DownloadDirArgs::from_get(entry.fid, output, args),
         )
         .await;
     }
@@ -1403,6 +1423,15 @@ async fn download_with_retry(
         let raw_stream = builder.prepare()?.stream().await;
         let raw_stream = match raw_stream {
             Ok(stream) => stream,
+            Err(err) if start_offset > 0 && is_unsupported_resume_error(&err) => {
+                remove_if_exists(output).await?;
+                if flags.debug && !flags.quiet {
+                    eprintln!(
+                        "download resume unavailable at offset {start_offset}; restarting file"
+                    );
+                }
+                continue;
+            }
             Err(err) if should_retry_download(retry, attempts, &err) => {
                 attempts += 1;
                 if let Some(control) = &control {
@@ -1508,6 +1537,14 @@ fn is_retryable_boxed_error(err: &(dyn std::error::Error + 'static)) -> bool {
         .is_some_and(is_retryable_error)
 }
 
+fn is_unsupported_resume_error(err: &QuarkPanError) -> bool {
+    matches!(
+        err,
+        QuarkPanError::InvalidArgument(message)
+            if message == "server did not honor range request for resume download"
+    )
+}
+
 pub(crate) async fn handle_download_dir(
     flags: OutputFlags,
     quark_pan: &QuarkPan,
@@ -1516,6 +1553,7 @@ pub(crate) async fn handle_download_dir(
     let task_path = dir_task_path(&args.output)?;
     let existing_task = read_json_file::<DownloadDirTask>(&task_path).await?;
     let merge_mode = args.continue_download && args.overwrite;
+    let verify_mode = args.verify_mode();
 
     if args.output.exists() && !args.continue_download && !args.overwrite {
         return Err(Box::new(QuarkPanError::invalid_argument(format!(
@@ -1591,7 +1629,7 @@ pub(crate) async fn handle_download_dir(
             retry_delay: args.retry_delay,
             retry_max_delay: args.retry_max_delay,
             retry_backoff: args.retry_backoff,
-            verify: VerifyMode::Auto,
+            verify: verify_mode,
             no_verify: false,
         };
         match download_file(flags, quark_pan, &file_args).await {
@@ -2526,6 +2564,17 @@ mod tests {
     }
 
     #[test]
+    fn detects_unsupported_resume_range_error() {
+        let unsupported = QuarkPanError::invalid_argument(
+            "server did not honor range request for resume download",
+        );
+        let other = QuarkPanError::invalid_argument("download md5 mismatch");
+
+        assert!(is_unsupported_resume_error(&unsupported));
+        assert!(!is_unsupported_resume_error(&other));
+    }
+
+    #[test]
     fn retry_mode_parses_auto() {
         assert_eq!("auto".parse::<RetryMode>().unwrap(), RetryMode::Auto);
     }
@@ -2581,6 +2630,26 @@ mod tests {
                 ..
             }) if remote_path_or_fid == "/tvtemp/01.mp4"
         ));
+    }
+
+    #[test]
+    fn get_directory_args_preserve_no_verify_for_download_dir() {
+        let get = GetArgs {
+            remote_path_or_fid: "ai".to_string(),
+            local_path: None,
+            overwrite: false,
+            continue_download: true,
+            retry: RetryMode::Auto,
+            retry_delay: 2,
+            retry_max_delay: 60,
+            retry_backoff: RetryBackoff::Exponential,
+            verify: VerifyMode::Auto,
+            no_verify: true,
+        };
+
+        let dir = DownloadDirArgs::from_get("fid1".to_string(), PathBuf::from("ai"), get);
+
+        assert_eq!(dir.verify_mode(), VerifyMode::Never);
     }
 
     #[test]
