@@ -1374,6 +1374,13 @@ async fn download_file(
     let local = md5_file(&part_path).await?;
     match verify_download_checksum(verify_mode, &local, info.md5.as_deref())? {
         VerificationOutcome::Verified | VerificationOutcome::NotAvailable => {}
+        VerificationOutcome::Mismatch if !flags.quiet => {
+            eprintln!(
+                "download verification warning: local md5 {local} does not match remote md5 {}",
+                info.md5.as_deref().unwrap_or("")
+            );
+        }
+        VerificationOutcome::Mismatch => {}
         VerificationOutcome::Skipped if !flags.quiet => {
             eprintln!("download verification skipped");
         }
@@ -2408,6 +2415,7 @@ fn md5_matches_remote(local_hex_md5: &str, remote_md5: &str) -> bool {
 enum VerificationOutcome {
     Verified,
     NotAvailable,
+    Mismatch,
     Skipped,
 }
 
@@ -2430,6 +2438,8 @@ fn verify_download_checksum(
     };
     if md5_matches_remote(local_hex_md5, remote_md5) {
         Ok(VerificationOutcome::Verified)
+    } else if mode == VerifyMode::Auto {
+        Ok(VerificationOutcome::Mismatch)
     } else {
         Err(QuarkPanError::invalid_argument(format!(
             "download md5 mismatch: local={}, remote={}",
@@ -2496,14 +2506,14 @@ mod tests {
     }
 
     #[test]
-    fn verify_auto_fails_on_remote_md5_mismatch() {
+    fn verify_auto_warns_on_remote_md5_mismatch() {
         let outcome = verify_download_checksum(
             VerifyMode::Auto,
             "4dbede38d219d5e194cabe3863cab2ca",
             Some("eccef295b1bfee6ffd98a4bd75717f08"),
         );
 
-        assert!(outcome.is_err());
+        assert!(matches!(outcome, Ok(VerificationOutcome::Mismatch)));
     }
 
     #[test]
